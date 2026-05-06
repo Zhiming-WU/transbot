@@ -3,7 +3,7 @@ A simple translation robot to translate HTML/EPUB document based on LLMs.
 Currently resuming at middle of HTML is not supported, though resuming at middle
 of EPUB is possible, starting from the chapter next to the last previously completely
 translated chapter, with order defined by the spine, given that the generated
-temporary file is not removed.
+ files (the `<dest_path>` and the `<dest_path>.temp`) are not removed.
 
 ## Example screen shots
 <br/>The original
@@ -32,7 +32,7 @@ Options:
           The LLM provider name. It can be 'openai', 'gemini', 'anthropic', 'zhipu', 'deepseek', 'qwen',
           'ollama[;url]' or 'custom;<api_style>;<url>', where url is the full URL of the LLM service,
           and api_style can be 'ollama', 'openai', 'gemini', or 'anthropic'.
-          The default URL for ollama is 'http://localhost:13434/api/chat'.
+          The default URL for ollama is 'http://localhost:11434/api/chat'.
   -m, --model-name <MODEL_NAME>
           The LLM model name
   -a, --api-key <API_KEY>

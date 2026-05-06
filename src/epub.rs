@@ -163,7 +163,7 @@ pub(crate) fn epub(
 ) -> Result<(), Error> {
     let mut index = 0u32;
     let mut previous_progress = 0u32;
-    let temp_path = get_extended_path(dest_path.as_ref(), "temp");
+    let temp_path = get_extended_path(dest_path.as_ref(), "temp", true);
 
     if let Ok(progress) = load_previous_progress(&temp_path) {
         previous_progress = progress;

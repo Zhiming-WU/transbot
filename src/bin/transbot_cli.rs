@@ -61,7 +61,7 @@ pub struct Cli {
         help = "The LLM provider name. It can be 'openai', 'gemini', 'anthropic', 'zhipu', 'deepseek', 'qwen',\n\
             'ollama[;url]' or 'custom;<api_style>;<url>', where url is the full URL of the LLM service,\n\
             and api_style can be 'ollama', 'openai', 'gemini', or 'anthropic'.\n\
-            The default URL for ollama is 'http://localhost:13434/api/chat'."
+            The default URL for ollama is 'http://localhost:11434/api/chat'."
     )]
     provider: LlmProvider,
 

@@ -5,7 +5,7 @@
 //! Currently resuming at middle of HTML is not supported, though resuming at middle
 //! of EPUB is possible, starting from the chapter next to the last previously completely
 //! translated chapter, with order defined by the spine, given that the generated
-//! temporary file (named `<dest_file>.temp.<ext>`) is not removed.
+//! files (the `<dest_path> and the `<dest_path>.temp`) is not removed.
 //!
 //! <br/>Below is an example of how to use the library crate.
 //! ```
@@ -78,7 +78,7 @@ impl FromStr for LlmApiStyle {
 }
 
 /// The LLM provider. For ollama providers, an optional full service URL may be provided,
-/// and 'http://localhost:13434/api/chat' is used if it's omitted. For custom providers,
+/// and 'http://localhost:11434/api/chat' is used if it's omitted. For custom providers,
 /// the api sytle and the full service URL must be provided.
 #[derive(Clone, Debug)]
 pub enum LlmProvider {
@@ -87,7 +87,7 @@ pub enum LlmProvider {
         api_style: LlmApiStyle,
         full_url: String,
     },
-    /// By ollama. Mostly running locally. Default URL is 'http://localhost:13434/api/chat'.
+    /// By ollama. Mostly running locally. Default URL is 'http://localhost:11434/api/chat'.
     OLLAMA { full_url: Option<String> },
     /// BY openpi. (<https://api.openai.com/v1/chat/completions>)
     OPENAI,
@@ -398,12 +398,21 @@ fn get_prompt(dest_lang: &str, prompt_hint: &Option<PromptHint>) -> String {
     )
 }
 
-pub(crate) fn get_extended_path<P: AsRef<Path>>(src_path: P, to_extend: &str) -> PathBuf {
+pub(crate) fn get_extended_path<P: AsRef<Path>>(
+    src_path: P,
+    to_extend: &str,
+    at_end: bool,
+) -> PathBuf {
     let path = src_path.as_ref().to_path_buf();
     let parent = path.parent().unwrap_or_else(|| Path::new(""));
-    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
-    let new_filename = format!("{}.{}.{}", stem, to_extend, ext);
+    let new_filename = if at_end {
+        let filename = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+        format!("{}.{}", filename, to_extend,)
+    } else {
+        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+        format!("{}.{}.{}", stem, to_extend, ext)
+    };
     parent.join(new_filename)
 }
 
@@ -435,7 +444,7 @@ impl TransBot {
                 } => verify_url(url)?,
                 LlmProvider::OLLAMA { full_url: url } => match url {
                     Some(url) => verify_url(url)?,
-                    None => String::from("http://localhost:13434/api/chat"),
+                    None => String::from("http://localhost:11434/api/chat"),
                 },
                 LlmProvider::GEMINI => {
                     String::from("https://generativelanguage.googleapis.com/v1beta/models")
@@ -537,7 +546,7 @@ impl TransBot {
         if let Some(dest) = dest_path {
             std::fs::write(dest, &output)?;
         } else {
-            let dest = get_extended_path(src_path, "transbot");
+            let dest = get_extended_path(src_path, "transbot", false);
             std::fs::write(dest, &output)?;
         }
         Ok(())
@@ -554,7 +563,7 @@ impl TransBot {
         if let Some(dest) = dest_path {
             epub::epub(self, src_path, dest)
         } else {
-            let dest = get_extended_path(src_path.as_ref(), "transbot");
+            let dest = get_extended_path(src_path.as_ref(), "transbot", false);
             epub::epub(self, src_path, dest)
         }
     }
