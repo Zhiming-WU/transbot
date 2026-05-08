@@ -64,6 +64,7 @@ struct AnthropicChatResponse {
 pub(crate) struct LlmConnector {
     llm_config: LlmConfigInner,
     client: Client,
+    single_prompt: bool,
     prompt: String,
     time_out: Duration,
     print_text: bool,
@@ -73,6 +74,7 @@ pub(crate) struct LlmConnector {
 impl LlmConnector {
     pub fn new(
         llm_config: LlmConfigInner,
+        single_prompt: bool,
         prompt: String,
         print_text: bool,
         clean_spacing: bool,
@@ -102,6 +104,7 @@ impl LlmConnector {
         Ok(Self {
             llm_config,
             client,
+            single_prompt,
             prompt,
             time_out,
             print_text,
@@ -148,26 +151,44 @@ impl LlmConnector {
         let url = llm_config.full_url.as_str();
         let model_name = llm_config.model_name.as_str();
         let temperature = llm_config.temperature;
-        let prompt = self.prompt.as_str();
 
-        let payload = json!({
-          "model": model_name,
-          "messages": [
-            {
-                "role": "system",
-                "content": prompt
-            },
-            {
-                "role": "user",
-                "content": input
-            }
-          ],
-          "stream": false,
-          "think": false,
-          "options": {
-            "temperature": temperature
-          }
-        });
+        let payload = if self.single_prompt {
+            let prompt = format!("{}\n\n{}", self.prompt, input);
+            json!({
+              "model": model_name,
+              "messages": [
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+              ],
+              "stream": false,
+              "think": false,
+              "options": {
+                "temperature": temperature
+              }
+            })
+        } else {
+            let prompt = self.prompt.as_str();
+            json!({
+              "model": model_name,
+              "messages": [
+                {
+                    "role": "system",
+                    "content": prompt
+                },
+                {
+                    "role": "user",
+                    "content": input
+                }
+              ],
+              "stream": false,
+              "think": false,
+              "options": {
+                "temperature": temperature
+              }
+            })
+        };
 
         let response = self
             .client
@@ -194,24 +215,40 @@ impl LlmConnector {
         let url = llm_config.full_url.as_str();
         let model_name = llm_config.model_name.as_str();
         let temperature = llm_config.temperature;
-        let prompt = self.prompt.as_str();
 
-        let payload = json!({
-          "model": model_name,
-          "messages": [
-            {
-                "role": "system",
-                "content": prompt
-            },
-            {
-                "role": "user",
-                "content": input
-            }
-          ],
-          //"n": 1u32,
-          "stream": false,
-          "temperature": temperature
-        });
+        let payload = if self.single_prompt {
+            let prompt = format!("{}\n\n{}", self.prompt, input);
+            json!({
+              "model": model_name,
+              "messages": [
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+              ],
+              //"n": 1u32,
+              "stream": false,
+              "temperature": temperature
+            })
+        } else {
+            let prompt = self.prompt.as_str();
+            json!({
+              "model": model_name,
+              "messages": [
+                {
+                    "role": "system",
+                    "content": prompt
+                },
+                {
+                    "role": "user",
+                    "content": input
+                }
+              ],
+              //"n": 1u32,
+              "stream": false,
+              "temperature": temperature
+            })
+        };
 
         let response = self
             .client
@@ -240,27 +277,41 @@ impl LlmConnector {
         let llm_config = &self.llm_config;
         let url = llm_config.full_url.as_str();
         let temperature = llm_config.temperature;
-        let prompt = self.prompt.as_str();
 
-        let payload = json!({
-            "system_instruction": {
-                "parts": [
-                    {
+        let payload = if self.single_prompt {
+            let prompt = format!("{}\n\n{}", self.prompt, input);
+            json!({
+                "contents": [{
+                    "role": "user",
+                    "parts": [{
                         "text": prompt
-                    }
-                ]
-            },
-            "contents": [{
-                "role": "user",
-                "parts": [{
-                    "text": input
-                }]
-            }],
-            "generationConfig": {
-                //"candidateCount": 1u32,
-                "temperature": temperature,
-            }
-        });
+                    }]
+                }],
+                "generationConfig": {
+                    //"candidateCount": 1u32,
+                    "temperature": temperature,
+                }
+            })
+        } else {
+            let prompt = self.prompt.as_str();
+            json!({
+                "system_instruction": {
+                    "parts": [{
+                        "text": prompt
+                    }]
+                },
+                "contents": [{
+                    "role": "user",
+                    "parts": [{
+                        "text": input
+                    }]
+                }],
+                "generationConfig": {
+                    //"candidateCount": 1u32,
+                    "temperature": temperature,
+                }
+            })
+        };
 
         let response = self
             .client
@@ -293,19 +344,33 @@ impl LlmConnector {
         let url = llm_config.full_url.as_str();
         let model_name = llm_config.model_name.as_str();
         let temperature = llm_config.temperature;
-        let prompt = self.prompt.as_str();
 
-        let payload = json!({
-            "model": model_name,
-            "max_tokens": 65536u32,
-            "system": prompt,
-            "messages": [{
-                "role": "user",
-                "content": input
-            }],
-            "stream": false,
-            "temperature": temperature,
-        });
+        let payload = if self.single_prompt {
+            let prompt = format!("{}\n\n{}", self.prompt, input);
+            json!({
+                "model": model_name,
+                "max_tokens": 65536u32,
+                "messages": [{
+                    "role": "user",
+                    "content": prompt
+                }],
+                "stream": false,
+                "temperature": temperature,
+            })
+        } else {
+            let prompt = self.prompt.as_str();
+            json!({
+                "model": model_name,
+                "max_tokens": 65536u32,
+                "system": prompt,
+                "messages": [{
+                    "role": "user",
+                    "content": input
+                }],
+                "stream": false,
+                "temperature": temperature,
+            })
+        };
 
         let response = self
             .client

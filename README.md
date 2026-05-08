@@ -50,13 +50,17 @@ Options:
           by the program itself
   -d, --dest-lang <DEST_LANG>
           The language to translate into. The default is Chinese
+      --single-prompt <SINGLE_PROMPT>
+          Whether to use only single user prompt without system prompt.
+          The default is false [possible values: true, false]
       --html-elem-selector <HTML_ELEM_SELECTOR>
           The selector selecting which elements in the HTML file to translate, by providing
           the tag names and maybe their attributes. The default is 'p,h1,h2,h3,li'. Tag names are
           separated by commas. As an example, 'p,h1,h2,h3,li,code[class="c1"]' also selects `code`
           elements having 'class' attribute set to 'c1', which means comments in code blocks (but how
           code comments is defined is not common but specific to the HTML/EPUB file.
-          Specify '*' to select all elements.
+          Specify '*' to select all elements. For more complicated use, see the document at
+          https://docs.rs/lol_html/latest/lol_html/struct.Selector.html#supported-selector.
           And NOTICE that 'whole' means to pass the whole HTML to LLM to translate
       --syntax-strategy <SYNTAX_STRATEGY>
           The syntax strategy during translation. It can be 'byllm', 'bytransbot' or 'stripped'.

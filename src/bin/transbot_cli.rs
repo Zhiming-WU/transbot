@@ -92,12 +92,20 @@ pub struct Cli {
 
     #[arg(
         long,
+        help = "Whether to use only single user prompt without system prompt.\n\
+            The default is false"
+    )]
+    single_prompt: Option<bool>,
+
+    #[arg(
+        long,
         help = "The selector selecting which elements in the HTML file to translate, by providing\n\
             the tag names and maybe their attributes. The default is 'p,h1,h2,h3,li'. Tag names are\n\
             separated by commas. As an example, 'p,h1,h2,h3,li,code[class=\"c1\"]' also selects `code`\n\
             elements having 'class' attribute set to 'c1', which means comments in code blocks (but how\n\
             code comments is defined is not common but specific to the HTML/EPUB file.\n\
-            Specify '*' to select all elements.\n\
+            Specify '*' to select all elements. For more complicated use, see the document at\n\
+            https://docs.rs/lol_html/latest/lol_html/struct.Selector.html#supported-selector .\n\
             And NOTICE that 'whole' means to pass the whole HTML to LLM to translate"
     )]
     html_elem_selector: Option<String>,
@@ -148,6 +156,7 @@ fn main() -> Result<(), Error> {
 
     let trans_config = TransConfig {
         dest_lang: cli.dest_lang,
+        single_prompt: cli.single_prompt,
         html_elem_selector: cli.html_elem_selector,
         syntax_strategy: cli.syntax_strategy,
         prompt_hint: Some(prompt_hint),

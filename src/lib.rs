@@ -5,7 +5,7 @@
 //! Currently resuming at middle of HTML is not supported, though resuming at middle
 //! of EPUB is possible, starting from the chapter next to the last previously completely
 //! translated chapter, with order defined by the spine, given that the generated
-//! files (the `<dest_path> and the `<dest_path>.temp`) is not removed.
+//! files (the `<dest_path>` and the `<dest_path>.temp`) is not removed.
 //!
 //! <br/>Below is an example of how to use the library crate.
 //! ```
@@ -244,7 +244,8 @@ pub struct PromptHint {
     /// The extra instructions to ask the LLM to follow, like how to translate glossary, etc.
     pub extra_prompt: Option<String>,
     /// The full prompt. If it's provided, it replaces the whole default prompt set by
-    /// this crate itself.
+    /// this crate itself. For translategemma model, it's a good idea to refer to its prompt
+    /// guide at <https://www.ollama.com/library/translategemma>.
     pub full_prompt: Option<String>,
 }
 
@@ -285,23 +286,33 @@ impl Default for PromptHint {
 pub struct TransConfig {
     /// The destination language to translate into. The default is Chinese.
     pub dest_lang: Option<String>,
+    /// Whether to use only single user prompt without system prompt. The default is false.
+    /// If set to true, the translation instruction is put in the user prompt, and the text
+    /// to be translated is appended after it with two blank lines added between them.
+    /// If set to false, the translation instruction is put in the system prompt, and the
+    /// text to be translated is put in the user prompt.
+    pub single_prompt: Option<bool>,
     /// The selector selecting which elements in the HTML file to translate, by providing
     /// the tag names and maybe their attributes. The default is 'p,h1,h2,h3,li'. Tag names are
-    /// separated by commas. As an example, 'p,h1,h2,h3,li,code[class=\"c\"]' also selects `code`
+    /// separated by commas. As an example, 'p,h1,h2,h3,li,code[class=\"c\"]' also selects 'code'
     /// elements having 'class' attribute set to 'c', which means comments in code blocks (however
     /// how code comments is defined is not common but specific to the HTML/EPUB file.
-    /// Specify '*' to select all elements.
-    /// And NOTICE that 'whole' means to pass the whole HTML to LLM to translate"
+    /// Specify '*' to select all elements. <br/>For more complicated use, see the document at
+    /// <https://docs.rs/lol_html/latest/lol_html/struct.Selector.html#supported-selector>.
+    /// <br/>And NOTICE that 'whole' means to pass the whole HTML to LLM to translate.
     pub html_elem_selector: Option<String>,
     /// The strategy to maintain the syntax defined by sub elements of selected elements in the
     /// document. If the 'html_elem_selector' field is 'whole', the syntax of the whole HTML file is
     /// maintaied by the LLM and this field is ignored.
     pub syntax_strategy: Option<SyntaxStrategy>,
     /// The prompt hint. The default is 'None' and the crate provide the default prompt, which
-    /// is built from below template.
-    /// "You are a professional translator. Translate the provided text [related to {prompt_topic}]
-    /// into {dest_lang}. Strictly maintain the original HTML tags and HTML entities.
-    /// Return the translated text only. {prompt_extra}"
+    /// is built from template something like below.
+    /// <br/>"You are a professional translator specializing in translating text into {dest_lang}.
+    /// Your goal is to accurately convey the meaning and nuances of the original text
+    /// while adhering to {dest_lang} grammar, vocabulary, and cultural sensitivities.
+    /// Produce only the {dest_lang} translation, without any additional explanations or commentary.
+    /// Strictly maintain the original HTML tags and HTML entities.[ {extra_prompt}\n]
+    /// Please translate the provided [{prompt_topic} related ]text into {dest_lang}."
     pub prompt_hint: Option<PromptHint>,
     /// Whether to print to the stdout the text passed to LLM and the result text gotten from it.
     /// It's mainly for checking during trying this crate on some LLM. The default is false.
@@ -317,6 +328,7 @@ impl TransConfig {
     pub fn new() -> Self {
         Self {
             dest_lang: None,
+            single_prompt: None,
             html_elem_selector: None,
             syntax_strategy: None,
             prompt_hint: None,
@@ -327,6 +339,11 @@ impl TransConfig {
     /// Set the destination language.
     pub fn set_dest_lang(&mut self, dest_lang: &str) -> &mut Self {
         self.dest_lang = Some(dest_lang.to_string());
+        self
+    }
+    /// Set whether to use only single user prompt without system prompt.
+    pub fn set_single_prompt(&mut self, single_prompt: bool) -> &mut Self {
+        self.single_prompt = Some(single_prompt);
         self
     }
     /// Set the HTML element selector.
@@ -364,6 +381,7 @@ impl Default for TransConfig {
 
 pub(crate) struct TransConfigInner {
     dest_lang: String,
+    single_prompt: bool,
     html_elem_selector: String,
     syntax_strategy: SyntaxStrategy,
     print_translating_text: bool,
@@ -375,7 +393,7 @@ fn verify_url(url_str: &str) -> Result<String, Error> {
     Ok(url.to_string())
 }
 
-fn get_prompt(dest_lang: &str, prompt_hint: &Option<PromptHint>) -> String {
+fn get_prompt(dest_lang: &str, prompt_hint: &Option<PromptHint>, single_prompt: bool) -> String {
     let mut topic = "".to_string();
     let mut extra_prompt = "".to_string();
     if let Some(hint) = prompt_hint {
@@ -383,18 +401,27 @@ fn get_prompt(dest_lang: &str, prompt_hint: &Option<PromptHint>) -> String {
             return prompt.to_owned();
         }
         if let Some(t) = hint.topic.as_ref() {
-            topic = format!(" related to {}", t);
+            topic = format!("{} related ", t);
         }
         if let Some(e) = hint.extra_prompt.as_ref() {
-            extra_prompt = e.to_owned();
+            extra_prompt = format!(" {}\n", e);
         }
     }
+    let translate_request = if single_prompt {
+        format!("Please translate below {}text into {}:", topic, dest_lang)
+    } else {
+        format!(
+            "Please translate the provided {}text into {}.",
+            topic, dest_lang
+        )
+    };
     format!(
-        "You are a professional translator. \
-            Translate the provided text{} into {}. \
-            Strictly maintain the original HTML tags and HTML entities. \
-            Return the translated text only. {}",
-        topic, dest_lang, extra_prompt
+        "You are a professional translator specializing in translating text into {}. \
+            Your goal is to accurately convey the meaning and nuances of the original text \
+            while adhering to {} grammar, vocabulary, and cultural sensitivities. \
+            Produce only the {} translation, without any additional explanations or commentary. \
+            Strictly maintain the original HTML tags and HTML entities.{} {}",
+        dest_lang, dest_lang, dest_lang, extra_prompt, &translate_request,
     )
 }
 
@@ -474,7 +501,8 @@ impl TransBot {
             dest_lang: trans_config
                 .dest_lang
                 .to_owned()
-                .unwrap_or("Chinese(汉语)".into()),
+                .unwrap_or("Chinese(zh-Hans)".into()),
+            single_prompt: trans_config.single_prompt.unwrap_or(false),
             html_elem_selector: trans_config
                 .html_elem_selector
                 .to_owned()
@@ -489,7 +517,12 @@ impl TransBot {
 
         let llm_interactor = LlmConnector::new(
             llm_config_inner,
-            get_prompt(&trans_config_inner.dest_lang, &trans_config.prompt_hint),
+            trans_config_inner.single_prompt,
+            get_prompt(
+                &trans_config_inner.dest_lang,
+                &trans_config.prompt_hint,
+                trans_config_inner.single_prompt,
+            ),
             trans_config_inner.print_translating_text,
             trans_config_inner.clean_spacing,
         )?;
@@ -503,8 +536,11 @@ impl TransBot {
     /// Set a new prompt.
     pub fn set_prompt(&mut self, prompt_hint: &PromptHint) {
         let hint = Some(prompt_hint.to_owned());
-        self.llm_interactor
-            .set_prompt(get_prompt(&self.trans_config.dest_lang, &hint));
+        self.llm_interactor.set_prompt(get_prompt(
+            &self.trans_config.dest_lang,
+            &hint,
+            self.trans_config.single_prompt,
+        ));
     }
 
     /// Translate bytes of an HTML document.
