@@ -62,7 +62,7 @@ fn translate_toc(transbot: &TransBot, epub: &mut Epub) -> Result<(), Error> {
             }
         }
     });
-    if toc_text.len() > thres {
+    if !toc_text.is_empty() {
         toc_text_vec.push(toc_text);
     }
 
