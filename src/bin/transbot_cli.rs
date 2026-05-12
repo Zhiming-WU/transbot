@@ -2,6 +2,7 @@ use anyhow::{Error, anyhow};
 use clap::Parser;
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::sync::Arc;
 use transbot::{LlmConfig, LlmProvider, PromptHint, SyntaxStrategy, TransBot, TransConfig};
 
 #[derive(Clone, Debug)]
@@ -164,7 +165,13 @@ fn main() -> Result<(), Error> {
         clean_cjk_ascii_spacing: cli.clean_cjk_ascii_spacing,
     };
 
-    let transbot = TransBot::new(&llm_config, &trans_config)?;
+    let mut tbot = TransBot::new(&llm_config, &trans_config)?;
+    tbot.set_resuming_support(true);
+    let transbot = Arc::new(tbot);
+    let transbot1 = transbot.clone();
+    let _ = ctrlc::set_handler(move || {
+        transbot1.set_interrupted();
+    });
     match cli.file_format {
         Some(FileFormat::EPUB) => {
             transbot.translate_epub_file(&cli.input_file, cli.output_file.as_ref())?;

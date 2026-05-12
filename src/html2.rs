@@ -1,15 +1,18 @@
 use anyhow::Error;
 use lol_html::{HtmlRewriter, Settings, element, end_tag};
+use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::io::ErrorKind;
 use std::rc::Rc;
 
 use crate::*;
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 struct ProcessData {
     depth: u32,
     index: u32,
+    trans_index: u32,
     elem_buffer: String,
     trans_map: HashMap<u32, String>,
 }
@@ -66,11 +69,7 @@ fn html_pass2(
     Ok(out)
 }
 
-pub fn translate_html(
-    llm_interactor: &LlmConnector,
-    elem_selector: &str,
-    orig_html: &[u8],
-) -> Result<Vec<u8>, Error> {
+fn html_pass1(elem_selector: &str, orig_html: &[u8]) -> Result<Rc<RefCell<ProcessData>>, Error> {
     let data = Rc::new(RefCell::new(ProcessData::default()));
     let data1 = data.clone();
     let settings = Settings {
@@ -120,16 +119,85 @@ pub fn translate_html(
     let mut rewriter = HtmlRewriter::new(settings, output_sink);
     rewriter.write(orig_html)?;
 
+    Ok(data)
+}
+
+fn serialize_proc_data<P: AsRef<Path>>(path: P, data: &ProcessData) -> Result<(), Error> {
+    let bytes = bincode::serialize(data)?;
+    std::fs::write(path, bytes)?;
+    Ok(())
+}
+
+pub(crate) fn translate_html<P: AsRef<Path>>(
+    transbot: &TransBot,
+    orig_html: &[u8],
+    state_file_path: Option<P>,
+) -> Result<Vec<u8>, Error> {
+    let data: Rc<RefCell<ProcessData>> = if let Some(path) = &state_file_path {
+        match std::fs::read(path) {
+            Ok(bytes) => {
+                let decoded: ProcessData = bincode::deserialize(&bytes)?;
+                Rc::new(RefCell::new(decoded))
+            }
+            Err(e) if e.kind() == ErrorKind::NotFound => {
+                html_pass1(&transbot.trans_config.html_elem_selector, orig_html)?
+            }
+            Err(e) => {
+                return Err(e.into());
+            }
+        }
+    } else {
+        html_pass1(&transbot.trans_config.html_elem_selector, orig_html)?
+    };
+
+    if state_file_path.is_some() && transbot.is_interrupted() {
+        return Err(TransBot::get_interrupted_error());
+    }
     {
         let data3 = data.clone();
         let mut proc_data = data3.borrow_mut();
-        for index in 1..=proc_data.index {
+        let start_index = if proc_data.trans_index == 0 {
+            1
+        } else {
+            proc_data.trans_index
+        };
+        for index in start_index..=proc_data.index {
             let text = proc_data.trans_map.get(&index).unwrap();
-            let translated = llm_interactor.interact(text)?;
-            proc_data.trans_map.insert(index, translated);
+            match transbot.llm_interactor.interact(text) {
+                Ok(translated) => {
+                    proc_data.trans_map.insert(index, translated);
+                    proc_data.trans_index = index + 1;
+                }
+                Err(e) => {
+                    if let Some(path) = &state_file_path
+                        && proc_data.trans_index > start_index
+                    {
+                        let _ = serialize_proc_data(path, &proc_data);
+                    }
+                    return Err(e);
+                }
+            }
+            if let Some(path) = &state_file_path
+                && transbot.is_interrupted()
+            {
+                if proc_data.trans_index > start_index {
+                    let _ = serialize_proc_data(path, &proc_data);
+                }
+                return Err(TransBot::get_interrupted_error());
+            }
+        }
+        // Save the state file for possible failure before whole job done
+        if let Some(path) = &state_file_path
+            && proc_data.trans_index > start_index
+        {
+            let _ = serialize_proc_data(path, &proc_data);
         }
         proc_data.index = 0;
     }
 
-    html_pass2(data, elem_selector, orig_html)
+    html_pass2(
+        data.clone(),
+        &transbot.trans_config.html_elem_selector,
+        orig_html,
+    )
 }

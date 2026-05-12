@@ -72,6 +72,7 @@ fn translate_toc(transbot: &TransBot, epub: &mut Epub) -> Result<(), Error> {
     }
     let mut trans_map = HashMap::<u32, String>::new();
     for text in toc_text_vec {
+        check_interrupted(transbot)?;
         let result = transbot.get_llm_interactor().interact(&text)?;
         html1::handle_tagged_result(&result, &mut trans_map)?;
     }
@@ -156,6 +157,13 @@ fn save_previous_progress<P: AsRef<Path>>(temp_file: P, progress: u32) -> Result
     Ok(())
 }
 
+fn check_interrupted(transbot: &TransBot) -> Result<(), Error> {
+    if transbot.is_interrupted() {
+        return Err(TransBot::get_interrupted_error());
+    }
+    Ok(())
+}
+
 pub(crate) fn epub(
     transbot: &TransBot,
     src_path: impl AsRef<Path>,
@@ -177,6 +185,7 @@ pub(crate) fn epub(
         }
     };
 
+    check_interrupted(transbot)?;
     if index >= previous_progress {
         translate_metadata(transbot, &mut epub)?;
         epub.write().compression(9).save(&dest_path)?;
@@ -186,6 +195,7 @@ pub(crate) fn epub(
         index += 1;
     }
 
+    check_interrupted(transbot)?;
     if index >= previous_progress {
         translate_toc(transbot, &mut epub)?;
         epub.write().compression(9).save(&dest_path)?;
@@ -218,6 +228,7 @@ pub(crate) fn epub(
         })
         .collect::<Vec<String>>();
 
+    check_interrupted(transbot)?;
     for id in id_vec {
         if index < previous_progress {
             index += 1;
@@ -227,7 +238,9 @@ pub(crate) fn epub(
         let mut entry = manifest.by_id_mut(&id).unwrap();
         let view = entry.as_view();
         let orig_bytes = view.read_bytes()?;
-        let trans_bytes = transbot.translate_html(&orig_bytes)?;
+        let chapter_temp_path = get_extended_path(&temp_path, &format!("{}", index), true);
+        let trans_bytes =
+            transbot.translate_html_resumable(&orig_bytes, Some(chapter_temp_path))?;
         entry.set_content(trans_bytes);
         epub.write().compression(9).save(&dest_path)?;
         index += 1;

@@ -2,10 +2,16 @@
 //! documents (currently only HTML/EPUB is supported) by interact with an AI LLM
 //! (Large Language Model).
 //!
-//! Currently resuming at middle of HTML is not supported, though resuming at middle
-//! of EPUB is possible, starting from the chapter next to the last previously completely
-//! translated chapter, with order defined by the spine, given that the generated
-//! files (the `<dest_path>` and the `<dest_path>.temp`) is not removed.
+//! Resuming is possible. You need to call [TransBot::set_resuming_support] to enable it.
+//! And to support saving middle state for later resuming when interrupting by Ctrl+C,
+//! you need to capture the system signal and call [TransBot::set_interrupted] to notify
+//! the library to know it so that it can save the middle state and quit the current job.
+//! And notice below.
+//! <br/>Interrupting check is not performed in middle of file IO or an interaction with the LLM.
+//! but only between such actions.
+//! <br/>Files like `<dest_path>.temp[.x]` are used to save the middle state, and no resuming is
+//! performed if they are removed.
+//! <br/>[TransConfig::syntax_strategy] needs to be consistent for resuming to work.
 //!
 //! <br/>Below is an example of how to use the library crate.
 //! ```
@@ -32,12 +38,15 @@
 //! }
 //! ```
 
-use anyhow::Error;
+use anyhow::{Error, anyhow};
 use regex::Regex;
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::OnceLock;
+use std::sync::{
+    OnceLock,
+    atomic::{AtomicBool, Ordering},
+};
 use url::Url;
 
 pub(crate) mod epub;
@@ -447,6 +456,8 @@ pub(crate) fn get_extended_path<P: AsRef<Path>>(
 pub struct TransBot {
     trans_config: TransConfigInner,
     llm_interactor: LlmConnector,
+    resuming_enabled: bool,
+    is_interrupted: AtomicBool,
 }
 
 impl TransBot {
@@ -530,7 +541,27 @@ impl TransBot {
         Ok(Self {
             trans_config: trans_config_inner,
             llm_interactor,
+            resuming_enabled: false,
+            is_interrupted: AtomicBool::new(false),
         })
+    }
+
+    /// Enable or disable the resuming support.
+    pub fn set_resuming_support(&mut self, enabled: bool) {
+        self.resuming_enabled = enabled;
+    }
+
+    /// Notify the library that the program is interrupted.
+    pub fn set_interrupted(&self) {
+        self.is_interrupted.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn is_interrupted(&self) -> bool {
+        self.is_interrupted.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn get_interrupted_error() -> Error {
+        anyhow!("The translation job is interrupted.")
     }
 
     /// Set a new prompt.
@@ -545,28 +576,50 @@ impl TransBot {
 
     /// Translate bytes of an HTML document.
     pub fn translate_html(&self, orig_html: &[u8]) -> Result<Vec<u8>, Error> {
+        self.translate_html_resumable_no_delete::<&str>(orig_html, None)
+    }
+
+    // Translate bytes of an HTML document, with resuming support, but not to delete
+    // the state file on termination
+    fn translate_html_resumable_no_delete<P: AsRef<Path>>(
+        &self,
+        orig_html: &[u8],
+        state_file_path: Option<P>,
+    ) -> Result<Vec<u8>, Error> {
         if self.trans_config.html_elem_selector.to_lowercase() == "whole" {
             let input = String::from_utf8_lossy(orig_html);
             let output = self.llm_interactor.interact(&input)?;
             return Ok(output.into());
         }
         match self.trans_config.syntax_strategy {
-            SyntaxStrategy::MaintainedByTransBot => html1::translate_html(
-                &self.llm_interactor,
-                &self.trans_config.html_elem_selector,
-                orig_html,
-            ),
-            SyntaxStrategy::MaintainedByLlm => html2::translate_html(
-                &self.llm_interactor,
-                &self.trans_config.html_elem_selector,
-                orig_html,
-            ),
-            SyntaxStrategy::Stripped => html3::translate_html(
-                &self.llm_interactor,
-                &self.trans_config.html_elem_selector,
-                orig_html,
-            ),
+            SyntaxStrategy::MaintainedByTransBot => {
+                html1::translate_html(self, orig_html, state_file_path)
+            }
+            SyntaxStrategy::MaintainedByLlm => {
+                html2::translate_html(self, orig_html, state_file_path)
+            }
+            SyntaxStrategy::Stripped => html3::translate_html(self, orig_html, state_file_path),
         }
+    }
+
+    /// Translate bytes of an HTML document, with resuming support.
+    pub fn translate_html_resumable<P: AsRef<Path>>(
+        &self,
+        orig_html: &[u8],
+        state_file_path: Option<P>,
+    ) -> Result<Vec<u8>, Error> {
+        let state_file_path = if !self.resuming_enabled {
+            None
+        } else {
+            state_file_path
+        };
+        let out = self.translate_html_resumable_no_delete(orig_html, state_file_path.as_ref())?;
+        if self.resuming_enabled
+            && let Some(path) = state_file_path
+        {
+            let _ = std::fs::remove_file(path);
+        }
+        Ok(out)
     }
 
     /// Translate an HTML file. If the 'dest_path' is passed as 'None',
@@ -578,12 +631,22 @@ impl TransBot {
         dest_path: Option<P>,
     ) -> Result<(), Error> {
         let input = std::fs::read(src_path.as_ref())?;
-        let output = self.translate_html(&input)?;
-        if let Some(dest) = dest_path {
-            std::fs::write(dest, &output)?;
+        let dest = if let Some(dest) = dest_path {
+            dest.as_ref().to_path_buf()
         } else {
-            let dest = get_extended_path(src_path, "transbot", false);
-            std::fs::write(dest, &output)?;
+            get_extended_path(src_path, "transbot", false)
+        };
+        let state_file_path = if self.resuming_enabled {
+            Some(get_extended_path(&dest, "temp", true))
+        } else {
+            None
+        };
+        let output = self.translate_html_resumable_no_delete(&input, state_file_path.as_ref())?;
+        std::fs::write(&dest, &output)?;
+        if self.resuming_enabled
+            && let Some(path) = state_file_path.as_ref()
+        {
+            let _ = std::fs::remove_file(path);
         }
         Ok(())
     }

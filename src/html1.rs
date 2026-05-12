@@ -2,18 +2,21 @@ use anyhow::Error;
 use lol_html::{HtmlRewriter, Settings, element, end_tag, text};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
+use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::io::ErrorKind;
 use std::rc::Rc;
 
 use crate::*;
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 struct ProcessData {
     new_tag: bool,
     depth: u32,
     chunk_count: u32,
     pass2_index: u32,
+    trans_index: usize,
     text_to_trans: String,
     text_vec: Vec<String>,
     trans_map: HashMap<u32, String>,
@@ -114,11 +117,7 @@ fn html_pass2(
     Ok(out)
 }
 
-pub(crate) fn translate_html(
-    llm_interactor: &LlmConnector,
-    elem_selector: &str,
-    orig_html: &[u8],
-) -> Result<Vec<u8>, Error> {
+fn html_pass1(elem_selector: &str, orig_html: &[u8]) -> Result<Rc<RefCell<ProcessData>>, Error> {
     let data = Rc::new(RefCell::new(ProcessData::default()));
     let data1 = data.clone();
     let data2 = data.clone();
@@ -187,14 +186,101 @@ pub(crate) fn translate_html(
             std::mem::swap(&mut text, &mut proc_data.text_to_trans);
             proc_data.text_vec.push(text);
         }
+    }
+    Ok(data)
+}
 
+fn translate_text(
+    llm_interactor: &LlmConnector,
+    text: &str,
+    trans_map: &mut HashMap<u32, String>,
+) -> Result<(), Error> {
+    let result = llm_interactor.interact(text)?;
+    handle_tagged_result(&result, trans_map)?;
+    Ok(())
+}
+
+fn serialize_proc_data<P: AsRef<Path>>(path: P, data: &ProcessData) -> Result<(), Error> {
+    let bytes = bincode::serialize(data)?;
+    std::fs::write(path, bytes)?;
+    Ok(())
+}
+
+pub(crate) fn translate_html<P: AsRef<Path>>(
+    transbot: &TransBot,
+    orig_html: &[u8],
+    state_file_path: Option<P>,
+) -> Result<Vec<u8>, Error> {
+    let data = if let Some(path) = &state_file_path {
+        match std::fs::read(path) {
+            Ok(bytes) => {
+                let decoded: ProcessData = bincode::deserialize(&bytes)?;
+                Rc::new(RefCell::new(decoded))
+            }
+            Err(e) if e.kind() == ErrorKind::NotFound => {
+                html_pass1(&transbot.trans_config.html_elem_selector, orig_html)?
+            }
+            Err(e) => {
+                return Err(e.into());
+            }
+        }
+    } else {
+        html_pass1(&transbot.trans_config.html_elem_selector, orig_html)?
+    };
+
+    if state_file_path.is_some() && transbot.is_interrupted() {
+        return Err(TransBot::get_interrupted_error());
+    }
+    {
+        let mut proc_data = data.borrow_mut();
         let mut text_vec = Vec::<String>::new();
         std::mem::swap(&mut text_vec, &mut proc_data.text_vec);
-        for text in &text_vec {
-            let result = llm_interactor.interact(text)?;
-            handle_tagged_result(&result, &mut proc_data.trans_map)?;
+        let start_index = proc_data.trans_index;
+        for index in start_index..text_vec.len() {
+            match translate_text(
+                &transbot.llm_interactor,
+                &text_vec[index],
+                &mut proc_data.trans_map,
+            ) {
+                Ok(_) => {
+                    proc_data.trans_index = index + 1;
+                }
+                Err(e) => {
+                    if let Some(path) = &state_file_path
+                        && proc_data.trans_index > start_index
+                    {
+                        std::mem::swap(&mut text_vec, &mut proc_data.text_vec);
+                        let _ = serialize_proc_data(path, &proc_data);
+                    }
+                    return Err(e);
+                }
+            }
+            if let Some(path) = &state_file_path
+                && transbot.is_interrupted()
+            {
+                if proc_data.trans_index > start_index {
+                    if proc_data.trans_index < text_vec.len() {
+                        std::mem::swap(&mut text_vec, &mut proc_data.text_vec);
+                    }
+                    let _ = serialize_proc_data(path, &proc_data);
+                }
+                return Err(TransBot::get_interrupted_error());
+            }
         }
+
+        // Save the state file for possible failure before whole job done
+        if let Some(path) = &state_file_path
+            && proc_data.trans_index > start_index
+        {
+            let _ = serialize_proc_data(path, &proc_data);
+        }
+
         proc_data.depth = 0;
     }
-    html_pass2(data.clone(), elem_selector, orig_html)
+
+    html_pass2(
+        data.clone(),
+        &transbot.trans_config.html_elem_selector,
+        orig_html,
+    )
 }
