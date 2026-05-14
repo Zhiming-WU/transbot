@@ -2,7 +2,6 @@ use anyhow::Error;
 use lol_html::{HtmlRewriter, Settings, element, end_tag};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::rc::Rc;
 
@@ -11,10 +10,10 @@ use crate::*;
 #[derive(Default, Serialize, Deserialize)]
 struct ProcessData {
     depth: u32,
-    index: u32,
-    trans_index: u32,
-    elem_buffer: String,
-    trans_map: HashMap<u32, String>,
+    parse_index: usize,
+    trans_index: usize,
+    chunk_buf: String,
+    chunk_vec: Vec<String>,
 }
 
 fn html_pass2(
@@ -42,15 +41,18 @@ fn html_pass2(
                 }
                 el.on_end_tag(end_tag!(move |end| {
                     let mut proc_data = data2.borrow_mut();
-                    if proc_data.depth == 1 {
-                        proc_data.index += 1;
-                        let index = proc_data.index;
-                        let elem_buffer = proc_data.trans_map.remove(&index).unwrap_or_default();
-                        end.replace(&elem_buffer, lol_html::html_content::ContentType::Html);
-                        // Reset state
-                        proc_data.depth = 0;
-                    } else if proc_data.depth > 1 {
+                    if proc_data.depth >= 1 {
                         proc_data.depth -= 1;
+                        if proc_data.depth == 0 {
+                            let index = proc_data.parse_index;
+                            proc_data.parse_index += 1;
+                            let translated = if index < proc_data.chunk_vec.len() {
+                                std::mem::take(&mut proc_data.chunk_vec[index])
+                            } else {
+                                String::new()
+                            };
+                            end.replace(&translated, lol_html::html_content::ContentType::Html);
+                        }
                     }
                     Ok(())
                 }))
@@ -84,35 +86,28 @@ fn html_pass1(elem_selector: &str, orig_html: &[u8]) -> Result<Rc<RefCell<Proces
                     proc_data.depth += 1;
                 } else {
                     proc_data.depth = 1;
-                    proc_data.elem_buffer.clear();
+                    proc_data.chunk_buf.clear();
                 }
             }
-            el.on_end_tag(end_tag!(move |_end| {
+            el.on_end_tag(end_tag!(move |end| {
                 let mut proc_data = data2.borrow_mut();
-                if proc_data.depth == 1 {
-                    proc_data.index += 1;
-                    proc_data
-                        .elem_buffer
-                        .push_str(&format!("</{}>", _end.name()));
-                    let index = proc_data.index;
-                    let mut elem_buffer = String::new();
-                    std::mem::swap(&mut elem_buffer, &mut proc_data.elem_buffer);
-                    proc_data.trans_map.insert(index, elem_buffer);
-                    // Reset state
-                    proc_data.depth = 0;
-                } else if proc_data.depth > 1 {
+                if proc_data.depth >= 1 {
                     proc_data.depth -= 1;
+                    if proc_data.depth == 0 {
+                        proc_data.chunk_buf.push_str(&format!("</{}>", end.name()));
+                        let chunk_buf = std::mem::take(&mut proc_data.chunk_buf);
+                        proc_data.chunk_vec.push(chunk_buf);
+                    }
                 }
                 Ok(())
             }))
         })],
         ..Settings::default()
     };
-    let data2 = data.clone();
-    let output_sink = move |c: &[u8]| {
-        let mut proc_data = data2.borrow_mut();
+    let output_sink = |c: &[u8]| {
+        let mut proc_data = data.borrow_mut();
         if proc_data.depth > 0 {
-            proc_data.elem_buffer.push_str(&String::from_utf8_lossy(c));
+            proc_data.chunk_buf.push_str(&String::from_utf8_lossy(c));
         }
     };
 
@@ -154,18 +149,13 @@ pub(crate) fn translate_html<P: AsRef<Path>>(
         return Err(TransBot::get_interrupted_error());
     }
     {
-        let data3 = data.clone();
-        let mut proc_data = data3.borrow_mut();
-        let start_index = if proc_data.trans_index == 0 {
-            1
-        } else {
-            proc_data.trans_index
-        };
-        for index in start_index..=proc_data.index {
-            let text = proc_data.trans_map.get(&index).unwrap();
-            match transbot.llm_interactor.interact(text) {
+        let mut proc_data = data.borrow_mut();
+        let start_index = proc_data.trans_index;
+        for index in start_index..proc_data.chunk_vec.len() {
+            let chunk = &proc_data.chunk_vec[index];
+            match transbot.llm_interactor.interact(chunk) {
                 Ok(translated) => {
-                    proc_data.trans_map.insert(index, translated);
+                    proc_data.chunk_vec[index] = translated;
                     proc_data.trans_index = index + 1;
                 }
                 Err(e) => {
@@ -192,7 +182,6 @@ pub(crate) fn translate_html<P: AsRef<Path>>(
         {
             let _ = serialize_proc_data(path, &proc_data);
         }
-        proc_data.index = 0;
     }
 
     html_pass2(

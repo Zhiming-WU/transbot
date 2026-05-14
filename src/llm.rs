@@ -129,7 +129,7 @@ impl LlmConnector {
         };
 
         let out_str = resp_text
-            .trim()
+            //.trim()
             .trim_start_matches("```html\n")
             .trim_end_matches("\n```");
 

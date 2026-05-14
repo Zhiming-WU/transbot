@@ -1,5 +1,5 @@
 //! From the transbot crate you can build instance of translation robot to translate
-//! documents (currently only HTML/EPUB is supported) by interact with an AI LLM
+//! documents (currently HTML/EPUB/MarkDown/TEXT is supported) by interact with an AI LLM
 //! (Large Language Model).
 //!
 //! Resuming is possible. You need to call [TransBot::set_resuming_support] to enable it.
@@ -11,9 +11,17 @@
 //! but only between such actions.
 //! <br/>Files like `<dest_path>.temp[.x]` are used to save the middle state, and no resuming is
 //! performed if they are removed.
-//! <br/>[TransConfig::syntax_strategy] needs to be consistent for resuming to work.
+//! <br/>[TransConfig::syntax_strategy] (and also [TransConfig::text_chunk_size] in 'bytransbot' case)
+//! needs to be consistent for resuming to work.
 //!
-//! <br/>Below is an example of how to use the library crate.
+//! For all supported formats supported except EPUB (but including HTML in EPUB), you can use
+//! 'whole_doc_to_llm' option to tell transbot to send the whole document to LLM to translate
+//! without being parsed or splitted by transbot.
+//!
+//! The syntax strategy makes sense only for HTML/MarkDown, and 'stripped' strategy is not supported
+//! yet for MarkDown.
+//!
+//! Below is an example of how to use the library crate.
 //! ```
 //! use anyhow::Error;
 //! use transbot::{LlmConfig, LlmProvider, PromptHint, SyntaxStrategy, TransBot, TransConfig};
@@ -54,8 +62,32 @@ pub(crate) mod html1;
 pub(crate) mod html2;
 pub(crate) mod html3;
 pub(crate) mod llm;
+pub(crate) mod markdown1;
+pub(crate) mod markdown2;
+pub(crate) mod text;
 
 use llm::LlmConnector;
+
+#[derive(Clone, Debug)]
+pub enum DocFormat {
+    Html,
+    Epub,
+    MarkDown,
+    Text,
+}
+
+impl FromStr for DocFormat {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "html" => Ok(Self::Html),
+            "epub" => Ok(Self::Html),
+            "md" => Ok(Self::MarkDown),
+            "text" => Ok(Self::Text),
+            _ => Err(format!("Unsupported document format: {}", s)),
+        }
+    }
+}
 
 /// The API style of the LLM, which defines the message structure during interacting
 /// with the LLM. Most LLM provides provide openai-compatible API (although its full
@@ -135,7 +167,7 @@ impl FromStr for LlmProvider {
             "custom" => {
                 if parts.len() < 3 {
                     return Err(
-                        "Wrong custom provider format. It should be 'custom:<api_style>:<url>'"
+                        "Wrong custom provider format. It should be 'custom;<api_style>;<url>'"
                             .into(),
                     );
                 }
@@ -311,8 +343,8 @@ pub struct TransConfig {
     /// <br/>And NOTICE that 'whole' means to pass the whole HTML to LLM to translate.
     pub html_elem_selector: Option<String>,
     /// The strategy to maintain the syntax defined by sub elements of selected elements in the
-    /// document. If the 'html_elem_selector' field is 'whole', the syntax of the whole HTML file is
-    /// maintaied by the LLM and this field is ignored.
+    /// document. If the 'whole_doc_to_llm' field is true or the 'html_elem_selector' field is 'whole',
+    /// the syntax of the whole HTML file is maintaied by the LLM and this field is ignored.
     pub syntax_strategy: Option<SyntaxStrategy>,
     /// The prompt hint. The default is 'None' and the crate provide the default prompt, which
     /// is built from template something like below.
@@ -330,6 +362,17 @@ pub struct TransConfig {
     /// text after translation. The spaces are usually added by the LLM during translation.
     /// The default is false.
     pub clean_cjk_ascii_spacing: Option<bool>,
+    /// Whether to pass the the document (like the HTML (include the HTML in an EPUB), the MarkDown,
+    /// The TEXT, etc. but NOT the EPUB) to the LLM to translate, without parsing and splitting.
+    /// The default is false.
+    pub whole_doc_to_llm: Option<bool>,
+    /// Whether to translate code (usually defined by a \` pair. NOT the code block defined by a \`\`\` pair)
+    /// in MarkDown. Make sense only for MarkDown documents if the 'syntax_strategy' is 'bytransbot'.
+    /// The default is false.
+    pub trans_code_in_md: Option<bool>,
+    /// The text size in characters to determine how long the text is sent to the LLM in some situations.
+    /// For example, in splitting long TEXT document to chunks to translate. The default is 400.
+    pub text_chunk_size: Option<usize>,
 }
 
 impl TransConfig {
@@ -343,6 +386,9 @@ impl TransConfig {
             prompt_hint: None,
             print_translating_text: None,
             clean_cjk_ascii_spacing: None,
+            whole_doc_to_llm: None,
+            trans_code_in_md: None,
+            text_chunk_size: None,
         }
     }
     /// Set the destination language.
@@ -395,6 +441,9 @@ pub(crate) struct TransConfigInner {
     syntax_strategy: SyntaxStrategy,
     print_translating_text: bool,
     clean_spacing: bool,
+    whole_doc_to_llm: bool,
+    trans_code_in_md: bool,
+    text_chunk_size: usize,
 }
 
 fn verify_url(url_str: &str) -> Result<String, Error> {
@@ -410,27 +459,23 @@ fn get_prompt(dest_lang: &str, prompt_hint: &Option<PromptHint>, single_prompt: 
             return prompt.to_owned();
         }
         if let Some(t) = hint.topic.as_ref() {
-            topic = format!("{} related ", t);
+            topic = format!(" related to '{}'", t);
         }
         if let Some(e) = hint.extra_prompt.as_ref() {
             extra_prompt = format!(" {}\n", e);
         }
     }
     let translate_request = if single_prompt {
-        format!("Please translate below {}text into {}:", topic, dest_lang)
+        format!("Please translate below text into {}:", dest_lang)
     } else {
-        format!(
-            "Please translate the provided {}text into {}.",
-            topic, dest_lang
-        )
+        format!("Please translate the provided text into {}.", dest_lang)
     };
     format!(
-        "You are a professional translator specializing in translating text into {}. \
-            Your goal is to accurately convey the meaning and nuances of the original text \
-            while adhering to {} grammar, vocabulary, and cultural sensitivities. \
-            Produce only the {} translation, without any additional explanations or commentary. \
-            Strictly maintain the original HTML tags and HTML entities.{} {}",
-        dest_lang, dest_lang, dest_lang, extra_prompt, &translate_request,
+        "You are a professional translator. \
+            Your task is to translate the provided text{} into {}. \
+            Strictly maintain the original format, including HTML/XML tags and entities. \
+            Return the translated text only.{} {}",
+        topic, dest_lang, extra_prompt, &translate_request,
     )
 }
 
@@ -524,6 +569,9 @@ impl TransBot {
                 .unwrap_or(SyntaxStrategy::MaintainedByLlm),
             print_translating_text: trans_config.print_translating_text.unwrap_or(false),
             clean_spacing: trans_config.clean_cjk_ascii_spacing.unwrap_or(false),
+            whole_doc_to_llm: trans_config.whole_doc_to_llm.unwrap_or(false),
+            trans_code_in_md: trans_config.trans_code_in_md.unwrap_or(false),
+            text_chunk_size: trans_config.text_chunk_size.unwrap_or(400),
         };
 
         let llm_interactor = LlmConnector::new(
@@ -574,38 +622,135 @@ impl TransBot {
         ));
     }
 
-    /// Translate bytes of an HTML document.
+    /// Translate bytes of an HTML document, no resuming support.
     pub fn translate_html(&self, orig_html: &[u8]) -> Result<Vec<u8>, Error> {
-        self.translate_html_resumable_no_delete::<&str>(orig_html, None)
+        self.translate_bytes::<&str>(DocFormat::Html, orig_html, None)
     }
 
-    // Translate bytes of an HTML document, with resuming support, but not to delete
-    // the state file on termination
-    fn translate_html_resumable_no_delete<P: AsRef<Path>>(
+    /// Translate bytes of an HTML document. For resuming support, you should enable it (via
+    /// [TransBot::set_resuming_support]) and pass 'state_file_path' with a 'Some' value.
+    pub fn translate_html_resumable<P: AsRef<Path>>(
         &self,
         orig_html: &[u8],
         state_file_path: Option<P>,
     ) -> Result<Vec<u8>, Error> {
-        if self.trans_config.html_elem_selector.to_lowercase() == "whole" {
-            let input = String::from_utf8_lossy(orig_html);
-            let output = self.llm_interactor.interact(&input)?;
-            return Ok(output.into());
-        }
-        match self.trans_config.syntax_strategy {
-            SyntaxStrategy::MaintainedByTransBot => {
-                html1::translate_html(self, orig_html, state_file_path)
-            }
-            SyntaxStrategy::MaintainedByLlm => {
-                html2::translate_html(self, orig_html, state_file_path)
-            }
-            SyntaxStrategy::Stripped => html3::translate_html(self, orig_html, state_file_path),
+        self.translate_bytes(DocFormat::Html, orig_html, state_file_path.as_ref())
+    }
+
+    /// Translate an HTML file. If 'dest_path' is 'None', '<src_filename>.transbot.<src_ext>' is used.
+    /// If resuming is enabled (via [TransBot::set_resuming_support]), the state file path '<dest_path>.temp'
+    /// is used for resuming support.
+    pub fn translate_html_file<P: AsRef<Path>>(
+        &self,
+        src_path: P,
+        dest_path: Option<P>,
+    ) -> Result<(), Error> {
+        self.translate_file(DocFormat::Html, src_path, dest_path)
+    }
+
+    /// Translate an EPUB file. If 'dest_path' is 'None', '<src_filename>.transbot.<src_ext>' is used.
+    pub fn translate_epub_file<P: AsRef<Path>>(
+        &self,
+        src_path: P,
+        dest_path: Option<P>,
+    ) -> Result<(), Error> {
+        if let Some(dest) = dest_path {
+            epub::epub(self, src_path, dest)
+        } else {
+            let dest = get_extended_path(src_path.as_ref(), "transbot", false);
+            epub::epub(self, src_path, dest)
         }
     }
 
-    /// Translate bytes of an HTML document, with resuming support.
-    pub fn translate_html_resumable<P: AsRef<Path>>(
+    /// Translate bytes of an MarkDown document. For resuming support, you should enable it (via
+    /// [TransBot::set_resuming_support]) and pass 'state_file_path' with a 'Some' value.
+    pub fn translate_markdown<P: AsRef<Path>>(
         &self,
-        orig_html: &[u8],
+        orig_markdown: &[u8],
+        state_file_path: Option<P>,
+    ) -> Result<Vec<u8>, Error> {
+        self.translate_bytes(DocFormat::MarkDown, orig_markdown, state_file_path.as_ref())
+    }
+
+    /// Translate a MarkDown file. If 'dest_path' is 'None', '<src_filename>.transbot.<src_ext>' is used.
+    /// If resuming is enabled (via [TransBot::set_resuming_support]), the state file path '<dest_path>.temp'
+    /// is used for resuming support.
+    pub fn translate_markdown_file<P: AsRef<Path>>(
+        &self,
+        src_path: P,
+        dest_path: Option<P>,
+    ) -> Result<(), Error> {
+        self.translate_file(DocFormat::MarkDown, src_path, dest_path)
+    }
+
+    /// Translate bytes of an TEXT document. For resuming support, you should enable it (via
+    /// [TransBot::set_resuming_support]) and pass 'state_file_path' with a 'Some' value.
+    pub fn translate_text<P: AsRef<Path>>(
+        &self,
+        orig_markdown: &[u8],
+        state_file_path: Option<P>,
+    ) -> Result<Vec<u8>, Error> {
+        self.translate_bytes(DocFormat::Text, orig_markdown, state_file_path.as_ref())
+    }
+
+    /// Translate a TEXT file. If 'dest_path' is 'None', '<src_filename>.transbot.<src_ext>' is used.
+    /// If resuming is enabled (via [TransBot::set_resuming_support]), the state file path '<dest_path>.temp'
+    /// is used for resuming support.
+    pub fn translate_text_file<P: AsRef<Path>>(
+        &self,
+        src_path: P,
+        dest_path: Option<P>,
+    ) -> Result<(), Error> {
+        self.translate_file(DocFormat::Text, src_path, dest_path)
+    }
+
+    fn translate_bytes_no_delete<P: AsRef<Path>>(
+        &self,
+        format: DocFormat,
+        orig_doc: &[u8],
+        state_file_path: Option<P>,
+    ) -> Result<Vec<u8>, Error> {
+        let mut whole_doc_to_llm = self.trans_config.whole_doc_to_llm;
+        if let DocFormat::Html = format
+            && self.trans_config.html_elem_selector.to_lowercase() == "whole"
+        {
+            whole_doc_to_llm = true;
+        }
+        if whole_doc_to_llm {
+            let input = String::from_utf8_lossy(orig_doc);
+            let output = self.llm_interactor.interact(&input)?;
+            return Ok(output.into());
+        }
+        match format {
+            DocFormat::Html => match self.trans_config.syntax_strategy {
+                SyntaxStrategy::MaintainedByTransBot => {
+                    html1::translate_html(self, orig_doc, state_file_path)
+                }
+                SyntaxStrategy::MaintainedByLlm => {
+                    html2::translate_html(self, orig_doc, state_file_path)
+                }
+                SyntaxStrategy::Stripped => html3::translate_html(self, orig_doc, state_file_path),
+            },
+            DocFormat::MarkDown => match self.trans_config.syntax_strategy {
+                SyntaxStrategy::MaintainedByTransBot => {
+                    markdown1::translate_markdown(self, orig_doc, state_file_path)
+                }
+                SyntaxStrategy::MaintainedByLlm => {
+                    markdown2::translate_markdown(self, orig_doc, state_file_path)
+                }
+                SyntaxStrategy::Stripped => Err(anyhow!(
+                    "Syntax strategy 'stripped' is not supported yet for MarkDown files."
+                )),
+            },
+            DocFormat::Text => text::translate_text(self, orig_doc, state_file_path),
+            _ => Err(anyhow!("Unexpected format.")),
+        }
+    }
+
+    fn translate_bytes<P: AsRef<Path>>(
+        &self,
+        format: DocFormat,
+        orig_doc: &[u8],
         state_file_path: Option<P>,
     ) -> Result<Vec<u8>, Error> {
         let state_file_path = if !self.resuming_enabled {
@@ -613,7 +758,7 @@ impl TransBot {
         } else {
             state_file_path
         };
-        let out = self.translate_html_resumable_no_delete(orig_html, state_file_path.as_ref())?;
+        let out = self.translate_bytes_no_delete(format, orig_doc, state_file_path.as_ref())?;
         if self.resuming_enabled
             && let Some(path) = state_file_path
         {
@@ -622,11 +767,9 @@ impl TransBot {
         Ok(out)
     }
 
-    /// Translate an HTML file. If the 'dest_path' is passed as 'None',
-    /// '<orig_filename>.transbot.<orig_ext>' is used, where <orig_filename>
-    /// is the original file name and <orig_ext> is the original file extension.
-    pub fn translate_html_file<P: AsRef<Path>>(
+    fn translate_file<P: AsRef<Path>>(
         &self,
+        format: DocFormat,
         src_path: P,
         dest_path: Option<P>,
     ) -> Result<(), Error> {
@@ -641,7 +784,7 @@ impl TransBot {
         } else {
             None
         };
-        let output = self.translate_html_resumable_no_delete(&input, state_file_path.as_ref())?;
+        let output = self.translate_bytes_no_delete(format, &input, state_file_path.as_ref())?;
         std::fs::write(&dest, &output)?;
         if self.resuming_enabled
             && let Some(path) = state_file_path.as_ref()
@@ -649,22 +792,6 @@ impl TransBot {
             let _ = std::fs::remove_file(path);
         }
         Ok(())
-    }
-
-    /// Translate an EPUB file. If the 'dest_path' is passed as 'None',
-    /// '<orig_filename>.transbot.<orig_ext>' is used, where <orig_filename>
-    /// is the original file name and <orig_ext> is the original file extension.
-    pub fn translate_epub_file<P: AsRef<Path>>(
-        &self,
-        src_path: P,
-        dest_path: Option<P>,
-    ) -> Result<(), Error> {
-        if let Some(dest) = dest_path {
-            epub::epub(self, src_path, dest)
-        } else {
-            let dest = get_extended_path(src_path.as_ref(), "transbot", false);
-            epub::epub(self, src_path, dest)
-        }
     }
 
     pub(crate) fn get_llm_interactor(&self) -> &LlmConnector {

@@ -4,7 +4,6 @@ use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::rc::Rc;
 
@@ -14,42 +13,44 @@ use crate::*;
 struct ProcessData {
     new_tag: bool,
     depth: u32,
-    chunk_count: u32,
-    pass2_index: u32,
+    parse_index: usize,
     trans_index: usize,
-    text_to_trans: String,
-    text_vec: Vec<String>,
-    trans_map: HashMap<u32, String>,
+    chunk_group_buf: String,
+    chunk_group_vec: Vec<String>,
+    chunk_vec: Vec<String>,
 }
 
-pub(crate) fn handle_tagged_result(
-    text: &str,
-    trans_map: &mut HashMap<u32, String>,
-) -> Result<(), Error> {
+pub(crate) fn handle_tagged_result(text: &str, chunk_vec: &mut [String]) -> Result<(), Error> {
     let mut reader = Reader::from_str(text);
     reader.config_mut().trim_text(true);
 
+    let len = chunk_vec.len();
     let mut buf = Vec::new();
-    let mut index = 0u32;
+    let mut index = len;
+    let mut has_text = false;
 
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
-                let tag_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
-                if tag_name == SYNTAX_TAG
+                if e.name().as_ref() == SYNTAX_TAG.as_bytes()
                     && let Ok(Some(id)) = e.try_get_attribute("id")
-                    && let Ok(id) = String::from_utf8_lossy(&id.value).parse::<u32>()
+                    && let Ok(id) = String::from_utf8_lossy(&id.value).parse::<usize>()
                 {
                     index = id;
+                    has_text = false;
                 }
             }
             Ok(Event::Text(e)) => {
-                if index != 0 {
-                    trans_map.insert(index, String::from_utf8_lossy(e.as_ref()).into_owned());
+                has_text = true;
+                if index < len {
+                    chunk_vec[index] = String::from_utf8_lossy(e.as_ref()).into_owned();
                 }
             }
             Ok(Event::End(_)) => {
-                index = 0;
+                if !has_text && index < len {
+                    chunk_vec[index] = String::new();
+                }
+                index = len;
             }
             Ok(Event::Eof) => break,
             _ => (),
@@ -65,6 +66,11 @@ fn html_pass2(
     elem_selector: &str,
     orig_html: &[u8],
 ) -> Result<Vec<u8>, Error> {
+    {
+        let mut proc_data = data.borrow_mut();
+        proc_data.depth = 0;
+        proc_data.parse_index = 0;
+    }
     let data1 = data.clone();
     let data2 = data.clone();
     let mut out = Vec::<u8>::new();
@@ -93,13 +99,14 @@ fn html_pass2(
                     if proc_data.depth > 0 {
                         let chunk = text_chunk.as_str();
                         if !chunk.trim().is_empty() {
-                            proc_data.pass2_index += 1;
-                            let index = proc_data.pass2_index;
-                            if let Some(text) = proc_data.trans_map.remove(&index) {
-                                text_chunk
-                                    .replace(&text, lol_html::html_content::ContentType::Text);
-                            } else {
-                                eprintln!("Can not find trans text for chunk {}: {}", index, chunk);
+                            let index = proc_data.parse_index;
+                            proc_data.parse_index += 1;
+                            if index < proc_data.chunk_vec.len() {
+                                let translated = std::mem::take(&mut proc_data.chunk_vec[index]);
+                                text_chunk.replace(
+                                    &translated,
+                                    lol_html::html_content::ContentType::Text,
+                                );
                             }
                         }
                     }
@@ -117,13 +124,14 @@ fn html_pass2(
     Ok(out)
 }
 
-fn html_pass1(elem_selector: &str, orig_html: &[u8]) -> Result<Rc<RefCell<ProcessData>>, Error> {
+fn html_pass1(
+    elem_selector: &str,
+    orig_html: &[u8],
+    chunk_size: usize,
+) -> Result<Rc<RefCell<ProcessData>>, Error> {
     let data = Rc::new(RefCell::new(ProcessData::default()));
     let data1 = data.clone();
     let data2 = data.clone();
-    let thres = std::env::var("TRANSBOT_TEXT_SIZE_THRES")
-        .map(|x| x.parse::<usize>().unwrap_or(0))
-        .unwrap_or(0);
     let mut rewriter = HtmlRewriter::new(
         Settings {
             element_content_handlers: vec![
@@ -142,10 +150,9 @@ fn html_pass1(elem_selector: &str, orig_html: &[u8]) -> Result<Rc<RefCell<Proces
                         if proc_data.depth > 0 {
                             proc_data.depth -= 1;
                         }
-                        if proc_data.depth == 0 && proc_data.text_to_trans.len() > thres {
-                            let mut text = String::new();
-                            std::mem::swap(&mut text, &mut proc_data.text_to_trans);
-                            proc_data.text_vec.push(text);
+                        if proc_data.depth == 0 && proc_data.chunk_group_buf.len() > chunk_size {
+                            let chunk = std::mem::take(&mut proc_data.chunk_group_buf);
+                            proc_data.chunk_group_vec.push(chunk);
                         }
                         Ok(())
                     }))
@@ -155,18 +162,18 @@ fn html_pass1(elem_selector: &str, orig_html: &[u8]) -> Result<Rc<RefCell<Proces
                     if proc_data.depth > 0 {
                         let chunk = text_chunk.as_str();
                         if !chunk.trim().is_empty() {
-                            proc_data.chunk_count += 1;
-                            let count = proc_data.chunk_count;
-                            proc_data.trans_map.insert(count, String::from(chunk));
+                            let index = proc_data.parse_index;
+                            proc_data.parse_index += 1;
+                            proc_data.chunk_vec.push(String::from(chunk));
                             let sep = if proc_data.new_tag {
                                 proc_data.new_tag = false;
                                 "\n"
                             } else {
                                 ""
                             };
-                            proc_data.text_to_trans.push_str(&format!(
+                            proc_data.chunk_group_buf.push_str(&format!(
                                 "{}<{} id=\"{}\">{}</{}>",
-                                sep, SYNTAX_TAG, count, chunk, SYNTAX_TAG
+                                sep, SYNTAX_TAG, index, chunk, SYNTAX_TAG
                             ));
                         }
                     }
@@ -181,10 +188,9 @@ fn html_pass1(elem_selector: &str, orig_html: &[u8]) -> Result<Rc<RefCell<Proces
     rewriter.end()?;
     {
         let mut proc_data = data.borrow_mut();
-        if !proc_data.text_to_trans.is_empty() {
-            let mut text = String::new();
-            std::mem::swap(&mut text, &mut proc_data.text_to_trans);
-            proc_data.text_vec.push(text);
+        if !proc_data.chunk_group_buf.is_empty() {
+            let chunk = std::mem::take(&mut proc_data.chunk_group_buf);
+            proc_data.chunk_group_vec.push(chunk);
         }
     }
     Ok(data)
@@ -193,10 +199,10 @@ fn html_pass1(elem_selector: &str, orig_html: &[u8]) -> Result<Rc<RefCell<Proces
 fn translate_text(
     llm_interactor: &LlmConnector,
     text: &str,
-    trans_map: &mut HashMap<u32, String>,
+    chunk_vec: &mut [String],
 ) -> Result<(), Error> {
     let result = llm_interactor.interact(text)?;
-    handle_tagged_result(&result, trans_map)?;
+    handle_tagged_result(&result, chunk_vec)?;
     Ok(())
 }
 
@@ -211,6 +217,8 @@ pub(crate) fn translate_html<P: AsRef<Path>>(
     orig_html: &[u8],
     state_file_path: Option<P>,
 ) -> Result<Vec<u8>, Error> {
+    let selector = &transbot.trans_config.html_elem_selector;
+    let chunk_size = transbot.trans_config.text_chunk_size;
     let data = if let Some(path) = &state_file_path {
         match std::fs::read(path) {
             Ok(bytes) => {
@@ -218,14 +226,14 @@ pub(crate) fn translate_html<P: AsRef<Path>>(
                 Rc::new(RefCell::new(decoded))
             }
             Err(e) if e.kind() == ErrorKind::NotFound => {
-                html_pass1(&transbot.trans_config.html_elem_selector, orig_html)?
+                html_pass1(selector, orig_html, chunk_size)?
             }
             Err(e) => {
                 return Err(e.into());
             }
         }
     } else {
-        html_pass1(&transbot.trans_config.html_elem_selector, orig_html)?
+        html_pass1(selector, orig_html, chunk_size)?
     };
 
     if state_file_path.is_some() && transbot.is_interrupted() {
@@ -233,14 +241,13 @@ pub(crate) fn translate_html<P: AsRef<Path>>(
     }
     {
         let mut proc_data = data.borrow_mut();
-        let mut text_vec = Vec::<String>::new();
-        std::mem::swap(&mut text_vec, &mut proc_data.text_vec);
         let start_index = proc_data.trans_index;
-        for index in start_index..text_vec.len() {
+        for index in start_index..proc_data.chunk_group_vec.len() {
+            let chunk_group = std::mem::take(&mut proc_data.chunk_group_vec[index]);
             match translate_text(
                 &transbot.llm_interactor,
-                &text_vec[index],
-                &mut proc_data.trans_map,
+                &chunk_group,
+                &mut proc_data.chunk_vec,
             ) {
                 Ok(_) => {
                     proc_data.trans_index = index + 1;
@@ -249,7 +256,8 @@ pub(crate) fn translate_html<P: AsRef<Path>>(
                     if let Some(path) = &state_file_path
                         && proc_data.trans_index > start_index
                     {
-                        std::mem::swap(&mut text_vec, &mut proc_data.text_vec);
+                        // put back the untranslated chunk group
+                        proc_data.chunk_group_vec[index] = chunk_group;
                         let _ = serialize_proc_data(path, &proc_data);
                     }
                     return Err(e);
@@ -259,9 +267,6 @@ pub(crate) fn translate_html<P: AsRef<Path>>(
                 && transbot.is_interrupted()
             {
                 if proc_data.trans_index > start_index {
-                    if proc_data.trans_index < text_vec.len() {
-                        std::mem::swap(&mut text_vec, &mut proc_data.text_vec);
-                    }
                     let _ = serialize_proc_data(path, &proc_data);
                 }
                 return Err(TransBot::get_interrupted_error());
@@ -278,9 +283,5 @@ pub(crate) fn translate_html<P: AsRef<Path>>(
         proc_data.depth = 0;
     }
 
-    html_pass2(
-        data.clone(),
-        &transbot.trans_config.html_elem_selector,
-        orig_html,
-    )
+    html_pass2(data.clone(), selector, orig_html)
 }

@@ -3,7 +3,6 @@ use anyhow::Error;
 use rbook::Epub;
 use rbook::epub::toc::EpubTocEntryMut;
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::convert::AsRef;
 use std::fs::File;
 use std::io::{Read, Write};
@@ -34,32 +33,30 @@ where
 }
 
 fn translate_toc(transbot: &TransBot, epub: &mut Epub) -> Result<(), Error> {
-    let mut index = 0u32;
+    let mut index = 0usize;
     let mut toc_text = String::new();
     let mut toc_text_vec = Vec::<String>::new();
-    let default_thres = 300usize;
-    let thres = std::env::var("TRANSBOT_TEXT_SIZE_THRES")
-        .map(|x| x.parse::<usize>().unwrap_or(default_thres))
-        .unwrap_or(default_thres);
+    let mut chunk_vec = Vec::new();
+    let thres = transbot.trans_config.text_chunk_size;
 
     // pass1
     traverse_toc_mut(epub, |entry| {
         let elem = entry.borrow();
         let view = elem.as_view();
         if !view.label().trim().is_empty() {
-            index += 1;
+            chunk_vec.push(view.label().to_string());
             toc_text.push_str(&format!(
                 "<{} id=\"{}\">{}</{}>\n",
                 SYNTAX_TAG,
                 index,
-                view.label().trim(),
+                view.label(),
                 SYNTAX_TAG,
             ));
             if toc_text.len() > thres {
-                let mut tmp_text = String::new();
-                std::mem::swap(&mut tmp_text, &mut toc_text);
-                toc_text_vec.push(tmp_text);
+                let text = std::mem::take(&mut toc_text);
+                toc_text_vec.push(text);
             }
+            index += 1;
         }
     });
     if !toc_text.is_empty() {
@@ -70,11 +67,10 @@ fn translate_toc(transbot: &TransBot, epub: &mut Epub) -> Result<(), Error> {
     if toc_text_vec.is_empty() {
         return Ok(());
     }
-    let mut trans_map = HashMap::<u32, String>::new();
     for text in toc_text_vec {
         check_interrupted(transbot)?;
         let result = transbot.get_llm_interactor().interact(&text)?;
-        html1::handle_tagged_result(&result, &mut trans_map)?;
+        html1::handle_tagged_result(&result, &mut chunk_vec)?;
     }
 
     // pass2
@@ -83,10 +79,11 @@ fn translate_toc(transbot: &TransBot, epub: &mut Epub) -> Result<(), Error> {
         let mut elem = entry.borrow_mut();
         let label = elem.as_view().label();
         if !label.trim().is_empty() {
-            index += 1;
-            if let Some(text) = trans_map.get(&index) {
+            if index < chunk_vec.len() {
+                let text = std::mem::take(&mut chunk_vec[index]);
                 elem.set_label(text);
             }
+            index += 1;
         }
     });
 
@@ -94,48 +91,19 @@ fn translate_toc(transbot: &TransBot, epub: &mut Epub) -> Result<(), Error> {
 }
 
 fn translate_metadata(transbot: &TransBot, epub: &mut Epub) -> Result<(), Error> {
-    let mut index = 0u32;
-    let mut metadata_text = String::new();
     let props = ["dc:title", "dc:creator", "dc:description"];
 
-    // pass1
-    let metadata = epub.metadata();
-    for prop in props {
-        let entrys = metadata.by_property(prop);
-        for entry in entrys {
-            if !entry.value().trim().is_empty() {
-                index += 1;
-                metadata_text.push_str(&format!(
-                    "<{} id=\"{}\">{}</{}>\n",
-                    SYNTAX_TAG,
-                    index,
-                    entry.value().trim(),
-                    SYNTAX_TAG
-                ));
-            }
-        }
-    }
-
-    // translating text
-    if metadata_text.is_empty() {
-        return Ok(());
-    }
-    let mut trans_map = HashMap::<u32, String>::new();
-    let result = transbot.get_llm_interactor().interact(&metadata_text)?;
-    html1::handle_tagged_result(&result, &mut trans_map)?;
-
-    // pass2
-    index = 0;
+    // The "dc:description" metadata may be a HTML doc, so wrapping it into XML-like text
+    // using SYNTAX_TAG (like the way translating the toc) may cause wrong logic in parsing
+    // the result. So translate the metadata in a direct way.
     let mut metadata_mut = epub.metadata_mut();
     for prop in props {
         let entrys = metadata_mut.by_property_mut(prop);
         for mut entry in entrys {
             let view = entry.as_view();
             if !view.value().trim().is_empty() {
-                index += 1;
-                if let Some(text) = trans_map.get(&index) {
-                    entry.set_value(text);
-                }
+                let translated = transbot.get_llm_interactor().interact(view.value())?;
+                entry.set_value(translated);
             }
         }
     }

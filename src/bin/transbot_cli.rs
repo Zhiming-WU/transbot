@@ -1,34 +1,23 @@
 use anyhow::{Error, anyhow};
 use clap::Parser;
 use std::path::PathBuf;
-use std::str::FromStr;
 use std::sync::Arc;
-use transbot::{LlmConfig, LlmProvider, PromptHint, SyntaxStrategy, TransBot, TransConfig};
-
-#[derive(Clone, Debug)]
-enum FileFormat {
-    HTML,
-    EPUB,
-}
-
-impl FromStr for FileFormat {
-    type Err = String;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "html" => Ok(Self::HTML),
-            "epub" => Ok(Self::EPUB),
-            _ => Err(format!("Unsupported file format: {}", s)),
-        }
-    }
-}
+use transbot::{
+    DocFormat, LlmConfig, LlmProvider, PromptHint, SyntaxStrategy, TransBot, TransConfig,
+};
 
 #[derive(clap::Args)]
 struct PromptArgs {
-    #[arg(long, help = "The topic to set in prompt")]
+    #[arg(short = 't', long, help = "The topic to set in prompt")]
     prompt_topic: Option<String>,
-    #[arg(long, help = "The extra text (such as glossary) to set in prompt")]
+    #[arg(
+        short = 'e',
+        long,
+        help = "The extra text (such as glossary) to set in prompt"
+    )]
     prompt_extra: Option<String>,
     #[arg(
+        short = 'f',
         long,
         help = "The full prompt text. If it's set, it replaces the whole default prompt set\n\
             by the program itself"
@@ -39,11 +28,11 @@ struct PromptArgs {
 #[derive(Parser)]
 #[command(name = "transbot")]
 pub struct Cli {
-    #[arg(short, long, help = "The input HTML/EPUB file path")]
+    #[arg(short = 'i', long, help = "The input HTML/EPUB file path")]
     input_file: PathBuf,
 
     #[arg(
-        short,
+        short = 'o',
         long,
         help = "The output file path. The default is <orig_filename>.transbot.<orig_ext>, where <orig_filename>\n\
             is the original file name and <orig_ext> is the original file extension"
@@ -51,13 +40,15 @@ pub struct Cli {
     output_file: Option<PathBuf>,
 
     #[arg(
+        short = 'F',
         long,
-        help = "The format of the input file. If omitted, determined by the file extension."
+        help = "The format of the input file. It can be 'html', 'epub', 'md', or 'text'. If omitted, determined\n\
+            by the file extension."
     )]
-    file_format: Option<FileFormat>,
+    file_format: Option<DocFormat>,
 
     #[arg(
-        short,
+        short = 'p',
         long,
         help = "The LLM provider name. It can be 'openai', 'gemini', 'anthropic', 'zhipu', 'deepseek', 'qwen',\n\
             'ollama[;url]' or 'custom;<api_style>;<url>', where url is the full URL of the LLM service,\n\
@@ -66,16 +57,17 @@ pub struct Cli {
     )]
     provider: LlmProvider,
 
-    #[arg(short, long, help = "The LLM model name")]
+    #[arg(short = 'm', long, help = "The LLM model name")]
     model_name: String,
 
-    #[arg(short, long, help = "The LLM api key")]
+    #[arg(short = 'a', long, help = "The LLM api key")]
     api_key: Option<String>,
 
     #[arg(long, help = "The LLM temperature. The default is 0.1")]
     temperature: Option<f64>,
 
     #[arg(
+        short = 'T',
         long,
         help = "The time out of a single interaction with the LLM. The default is 300 seconds"
     )]
@@ -85,13 +77,14 @@ pub struct Cli {
     prompt_args: PromptArgs,
 
     #[arg(
-        short,
+        short = 'd',
         long,
         help = "The language to translate into. The default is Chinese"
     )]
     dest_lang: Option<String>,
 
     #[arg(
+        short = 's',
         long,
         help = "Whether to use only single user prompt without system prompt.\n\
             The default is false"
@@ -99,12 +92,13 @@ pub struct Cli {
     single_prompt: Option<bool>,
 
     #[arg(
+        short = 'H',
         long,
         help = "The selector selecting which elements in the HTML file to translate, by providing\n\
             the tag names and maybe their attributes. The default is 'p,h1,h2,h3,li'. Tag names are\n\
             separated by commas. As an example, 'p,h1,h2,h3,li,code[class=\"c1\"]' also selects `code`\n\
             elements having 'class' attribute set to 'c1', which means comments in code blocks (but how\n\
-            code comments is defined is not common but specific to the HTML/EPUB file.\n\
+            code comments is defined is not common but specific to the HTML/EPUB file).\n\
             Specify '*' to select all elements. For more complicated use, see the document at\n\
             https://docs.rs/lol_html/latest/lol_html/struct.Selector.html#supported-selector .\n\
             And NOTICE that 'whole' means to pass the whole HTML to LLM to translate"
@@ -112,6 +106,7 @@ pub struct Cli {
     html_elem_selector: Option<String>,
 
     #[arg(
+        short = 'S',
         long,
         help = "The syntax strategy during translation. It can be 'byllm', 'bytransbot' or 'stripped'.\n\
             The default is 'byllm'. This option is about how elements of non normal text, such as a link\n\
@@ -123,6 +118,7 @@ pub struct Cli {
     syntax_strategy: Option<SyntaxStrategy>,
 
     #[arg(
+        short = 'P',
         long,
         help = "Whether to print the text passed to LLM and the result text gotten from it. It's mainly for\n\
             checking during trying this program on some LLM. The default is false"
@@ -130,12 +126,38 @@ pub struct Cli {
     print_translating_text: Option<bool>,
 
     #[arg(
+        short = 'C',
         long,
         help = "Whether to remove spaces between ASCII text (usually terminology) and the Chinese/Japanese/Korean\n\
             text after translation. The spaces are usually added by the LLM during translation.\n\
             The default is false"
     )]
     clean_cjk_ascii_spacing: Option<bool>,
+
+    #[arg(
+        short = 'w',
+        long,
+        help = "Whether to pass the the document to the LLM to translate, without parsing and splitting.\n\
+            The default is false"
+    )]
+    whole_doc_to_llm: Option<bool>,
+
+    #[arg(
+        long,
+        help = "Whether to translate code (usually defined by a ` pair. NOT the code block defined\n\
+            by a ``` pair) in MarkDown. Make sense only for MarkDown documents if the 'syntax_strategy'\n\
+            is 'bytransbot'. The default is false"
+    )]
+    trans_code_in_md: Option<bool>,
+
+    #[arg(
+        short = 'z',
+        long,
+        help = "The text size in characters to determine how long the text is sent to the LLM in some\n\
+            situations. For example, in splitting long TEXT document to chunks to translate.\n\
+            The default is 400"
+    )]
+    text_chunk_size: Option<usize>,
 }
 
 fn main() -> Result<(), Error> {
@@ -163,6 +185,9 @@ fn main() -> Result<(), Error> {
         prompt_hint: Some(prompt_hint),
         print_translating_text: cli.print_translating_text,
         clean_cjk_ascii_spacing: cli.clean_cjk_ascii_spacing,
+        whole_doc_to_llm: cli.whole_doc_to_llm,
+        trans_code_in_md: cli.trans_code_in_md,
+        text_chunk_size: cli.text_chunk_size,
     };
 
     let mut tbot = TransBot::new(&llm_config, &trans_config)?;
@@ -173,20 +198,33 @@ fn main() -> Result<(), Error> {
         transbot1.set_interrupted();
     });
     match cli.file_format {
-        Some(FileFormat::EPUB) => {
+        Some(DocFormat::Epub) => {
             transbot.translate_epub_file(&cli.input_file, cli.output_file.as_ref())?;
         }
-        Some(FileFormat::HTML) => {
+        Some(DocFormat::Html) => {
             transbot.translate_html_file(&cli.input_file, cli.output_file.as_ref())?;
+        }
+        Some(DocFormat::MarkDown) => {
+            transbot.translate_markdown_file(&cli.input_file, cli.output_file.as_ref())?;
+        }
+        Some(DocFormat::Text) => {
+            transbot.translate_text_file(&cli.input_file, cli.output_file.as_ref())?;
         }
         _ => {
             if let Some(mime) = mime_guess::from_path(&cli.input_file).first() {
-                if mime.essence_str().contains("epub") {
+                if mime.essence_str() == "application/epub+zip" {
                     transbot.translate_epub_file(&cli.input_file, cli.output_file.as_ref())?;
                 } else if mime.essence_str().contains("htm") {
                     transbot.translate_html_file(&cli.input_file, cli.output_file.as_ref())?;
+                } else if mime.essence_str() == "text/markdown" {
+                    transbot.translate_markdown_file(&cli.input_file, cli.output_file.as_ref())?;
+                } else if mime.essence_str() == "text/plain" {
+                    transbot.translate_text_file(&cli.input_file, cli.output_file.as_ref())?;
                 } else {
-                    return Err(anyhow!("Unsupported input file format!"));
+                    return Err(anyhow!(
+                        "Unsupported input file format. [{}]",
+                        mime.essence_str()
+                    ));
                 }
             } else {
                 return Err(anyhow!("Unkonwn input file format!"));
