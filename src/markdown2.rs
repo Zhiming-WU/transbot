@@ -82,8 +82,13 @@ impl<'a> std::borrow::Borrow<Event<'a>> for EventWrapper<'a> {
                                 if index < proc_data.text_vec.len() {
                                     let t = std::mem::take(&mut proc_data.text_vec[index]);
                                     // println!("ReplaceText: {}", &t);
-                                    proc_data.pass2_out.push_str("\n\n");
+                                    if text.starts_with('\n') {
+                                        proc_data.pass2_out.push('\n');
+                                    }
                                     proc_data.pass2_out.push_str(&t);
+                                    if text.ends_with('\n') {
+                                        proc_data.pass2_out.push('\n');
+                                    }
                                 }
                                 proc_data.parse_index += 1;
                             }
@@ -95,7 +100,6 @@ impl<'a> std::borrow::Borrow<Event<'a>> for EventWrapper<'a> {
                         | Tag::Heading { .. }
                         | Tag::List(_)
                         | Tag::MetadataBlock(_)
-                        | Tag::BlockQuote(_)
                         | Tag::Table(_)
                         | Tag::HtmlBlock
                         | Tag::FootnoteDefinition(_) => {
@@ -112,7 +116,6 @@ impl<'a> std::borrow::Borrow<Event<'a>> for EventWrapper<'a> {
                     | TagEnd::Heading { .. }
                     | TagEnd::List(_)
                     | TagEnd::MetadataBlock(_)
-                    | TagEnd::BlockQuote(_)
                     | TagEnd::Table
                     | TagEnd::HtmlBlock
                     | TagEnd::FootnoteDefinition,

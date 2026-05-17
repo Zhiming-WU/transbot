@@ -50,7 +50,6 @@ fn markdown_pass2(
                 | Tag::Heading { .. }
                 | Tag::List(_)
                 | Tag::MetadataBlock(_)
-                | Tag::BlockQuote(_)
                 | Tag::Table(_)
                 | Tag::FootnoteDefinition(_) => {
                     proc_data.depth += 1;
@@ -68,7 +67,6 @@ fn markdown_pass2(
                 | TagEnd::Heading { .. }
                 | TagEnd::List(_)
                 | TagEnd::MetadataBlock(_)
-                | TagEnd::BlockQuote(_)
                 | TagEnd::Table
                 | TagEnd::FootnoteDefinition => {
                     if proc_data.depth > 0 {
@@ -139,7 +137,6 @@ fn markdown_pass1(orig_markdown: &str, chunk_size: usize) -> Result<ProcessData,
                 | Tag::Heading { .. }
                 | Tag::List(_)
                 | Tag::MetadataBlock(_)
-                | Tag::BlockQuote(_)
                 | Tag::Table(_)
                 | Tag::FootnoteDefinition(_),
             ) => {
@@ -150,7 +147,6 @@ fn markdown_pass1(orig_markdown: &str, chunk_size: usize) -> Result<ProcessData,
                 | TagEnd::Heading { .. }
                 | TagEnd::List(_)
                 | TagEnd::MetadataBlock(_)
-                | TagEnd::BlockQuote(_)
                 | TagEnd::Table
                 | TagEnd::FootnoteDefinition => {
                     if proc_data.depth > 0 {

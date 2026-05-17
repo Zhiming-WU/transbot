@@ -1,8 +1,8 @@
 [package]
 name = "transbot"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2024"
-description = "A simple translation robot that translates HTMLs/EPUBs/MarkDowns/TEXT based on LLMs."
+description = "A simple translation robot that translates HTMLs/EPUBs/MarkDowns/TEXTs based on LLMs."
 readme = "README.md"
 documentation = "https://docs.rs/transbot"
 repository = "https://github.com/Zhiming-WU/transbot.git"

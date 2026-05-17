@@ -820,4 +820,4 @@ pub(crate) fn remove_boundary_spaces<'a>(text: &'a str) -> Cow<'a, str> {
     }
 }
 
-pub(crate) const SYNTAX_TAG: &str = "a";
+pub(crate) const SYNTAX_TAG: &str = "span";

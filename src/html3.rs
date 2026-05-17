@@ -48,11 +48,12 @@ fn html_pass2(
                         if proc_data.depth == 0 {
                             let index = proc_data.parse_index;
                             proc_data.parse_index += 1;
-                            let translated = if index < proc_data.chunk_vec.len() {
+                            let mut translated = if index < proc_data.chunk_vec.len() {
                                 std::mem::take(&mut proc_data.chunk_vec[index])
                             } else {
                                 String::new()
                             };
+                            translated.push_str(&format!("</{}>", end.name()));
                             end.replace(&translated, lol_html::html_content::ContentType::Html);
                         }
                     }
