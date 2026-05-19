@@ -154,7 +154,8 @@ pub(crate) fn translate_html<P: AsRef<Path>>(
         for index in start_index..proc_data.chunk_vec.len() {
             let chunk = &proc_data.chunk_vec[index];
             match transbot.llm_interactor.interact(chunk) {
-                Ok(translated) => {
+                Ok(mut translated) => {
+                    restore_triming_newlines(&mut translated, chunk.as_str());
                     proc_data.chunk_vec[index] = translated;
                     proc_data.trans_index = index + 1;
                 }

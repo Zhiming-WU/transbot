@@ -20,7 +20,11 @@ struct ProcessData {
     chunk_vec: Vec<String>,
 }
 
-pub(crate) fn handle_tagged_result(text: &str, chunk_vec: &mut [String]) -> Result<(), Error> {
+pub(crate) fn handle_tagged_result(
+    text: &str,
+    chunk_vec: &mut [String],
+    syntax_tag: &str,
+) -> Result<(), Error> {
     let mut reader = Reader::from_str(text);
     reader.config_mut().trim_text(true);
 
@@ -32,7 +36,7 @@ pub(crate) fn handle_tagged_result(text: &str, chunk_vec: &mut [String]) -> Resu
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
-                if e.name().as_ref() == SYNTAX_TAG.as_bytes()
+                if e.name().as_ref() == syntax_tag.as_bytes()
                     && let Ok(Some(id)) = e.try_get_attribute("id")
                     && let Ok(id) = String::from_utf8_lossy(&id.value).parse::<usize>()
                 {
@@ -128,6 +132,7 @@ fn html_pass1(
     elem_selector: &str,
     orig_html: &[u8],
     chunk_size: usize,
+    syntax_tag: &str,
 ) -> Result<Rc<RefCell<ProcessData>>, Error> {
     let data = Rc::new(RefCell::new(ProcessData::default()));
     let data1 = data.clone();
@@ -173,7 +178,7 @@ fn html_pass1(
                             };
                             proc_data.chunk_group_buf.push_str(&format!(
                                 "{}<{} id=\"{}\">{}</{}>",
-                                sep, SYNTAX_TAG, index, chunk, SYNTAX_TAG
+                                sep, syntax_tag, index, chunk, syntax_tag
                             ));
                         }
                     }
@@ -196,13 +201,14 @@ fn html_pass1(
     Ok(data)
 }
 
-fn translate_text(
+pub(crate) fn translate_text(
     llm_interactor: &LlmConnector,
     text: &str,
     chunk_vec: &mut [String],
+    syntax_tag: &str,
 ) -> Result<(), Error> {
     let result = llm_interactor.interact(text)?;
-    handle_tagged_result(&result, chunk_vec)?;
+    handle_tagged_result(&result, chunk_vec, syntax_tag)?;
     Ok(())
 }
 
@@ -219,6 +225,7 @@ pub(crate) fn translate_html<P: AsRef<Path>>(
 ) -> Result<Vec<u8>, Error> {
     let selector = &transbot.trans_config.html_elem_selector;
     let chunk_size = transbot.trans_config.text_chunk_size;
+    let syntax_tag = transbot.trans_config.syntax_tag.as_str();
     let data = if let Some(path) = &state_file_path {
         match std::fs::read(path) {
             Ok(bytes) => {
@@ -226,14 +233,14 @@ pub(crate) fn translate_html<P: AsRef<Path>>(
                 Rc::new(RefCell::new(decoded))
             }
             Err(e) if e.kind() == ErrorKind::NotFound => {
-                html_pass1(selector, orig_html, chunk_size)?
+                html_pass1(selector, orig_html, chunk_size, syntax_tag)?
             }
             Err(e) => {
                 return Err(e.into());
             }
         }
     } else {
-        html_pass1(selector, orig_html, chunk_size)?
+        html_pass1(selector, orig_html, chunk_size, syntax_tag)?
     };
 
     if state_file_path.is_some() && transbot.is_interrupted() {
@@ -248,6 +255,7 @@ pub(crate) fn translate_html<P: AsRef<Path>>(
                 &transbot.llm_interactor,
                 &chunk_group,
                 &mut proc_data.chunk_vec,
+                syntax_tag,
             ) {
                 Ok(_) => {
                     proc_data.trans_index = index + 1;

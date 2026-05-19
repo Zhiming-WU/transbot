@@ -160,18 +160,23 @@ pub(crate) fn translate_html<P: AsRef<Path>>(
         let start_index = proc_data.trans_index;
         for index in start_index..proc_data.chunk_vec.len() {
             let chunk = &proc_data.chunk_vec[index];
-            match transbot.llm_interactor.interact(chunk) {
-                Ok(translated) => {
-                    proc_data.chunk_vec[index] = translated;
-                    proc_data.trans_index = index + 1;
-                }
-                Err(e) => {
-                    if let Some(path) = &state_file_path
-                        && proc_data.trans_index > start_index
-                    {
-                        let _ = serialize_proc_data(path, &proc_data);
+            if chunk.trim().is_empty() {
+                proc_data.trans_index = index + 1;
+            } else {
+                match transbot.llm_interactor.interact(chunk) {
+                    Ok(mut translated) => {
+                        restore_triming_newlines(&mut translated, chunk.as_str());
+                        proc_data.chunk_vec[index] = translated;
+                        proc_data.trans_index = index + 1;
                     }
-                    return Err(e);
+                    Err(e) => {
+                        if let Some(path) = &state_file_path
+                            && proc_data.trans_index > start_index
+                        {
+                            let _ = serialize_proc_data(path, &proc_data);
+                        }
+                        return Err(e);
+                    }
                 }
             }
             if let Some(path) = &state_file_path

@@ -106,7 +106,7 @@ fn get_cmark_parser(md_text: &str) -> Parser<'_> {
     Parser::new_ext(md_text, Options::all())
 }
 
-fn add_text_chunk(proc_data: &mut ProcessData, text: &str) {
+fn add_text_chunk(proc_data: &mut ProcessData, text: &str, syntax_tag: &str) {
     let index = proc_data.chunk_index;
     proc_data.chunk_index += 1;
     proc_data.chunk_vec.push(String::from(text));
@@ -118,18 +118,22 @@ fn add_text_chunk(proc_data: &mut ProcessData, text: &str) {
     };
     proc_data.chunk_group_buf.push_str(&format!(
         "{}<{} id=\"{}\">{}</{}>",
-        sep, SYNTAX_TAG, index, text, SYNTAX_TAG
+        sep, syntax_tag, index, text, syntax_tag
     ));
 }
 
-fn markdown_pass1(orig_markdown: &str, chunk_size: usize) -> Result<ProcessData, Error> {
+fn markdown_pass1(
+    orig_markdown: &str,
+    chunk_size: usize,
+    syntax_tag: &str,
+) -> Result<ProcessData, Error> {
     let mut proc_data = ProcessData::default();
     let parser = get_cmark_parser(orig_markdown);
     let dummy = parser.map(|event| {
         match event {
             Event::Text(text) => {
                 if proc_data.depth > 0 && !text.trim().is_empty() {
-                    add_text_chunk(&mut proc_data, text.as_ref());
+                    add_text_chunk(&mut proc_data, text.as_ref(), syntax_tag);
                 }
             }
             Event::Start(
@@ -166,7 +170,7 @@ fn markdown_pass1(orig_markdown: &str, chunk_size: usize) -> Result<ProcessData,
             // Add the code text to be translated to make translation accurate.
             // Whether to put in final translation result depends on config.
             Event::Code(text) => {
-                add_text_chunk(&mut proc_data, text.as_ref());
+                add_text_chunk(&mut proc_data, text.as_ref(), syntax_tag);
             }
             Event::Html(text) => {
                 proc_data.html_buf.push_str(text.as_ref());
@@ -182,16 +186,6 @@ fn markdown_pass1(orig_markdown: &str, chunk_size: usize) -> Result<ProcessData,
     Ok(proc_data)
 }
 
-fn translate_text(
-    llm_interactor: &LlmConnector,
-    text: &str,
-    chunk_vec: &mut [String],
-) -> Result<(), Error> {
-    let result = llm_interactor.interact(text)?;
-    html1::handle_tagged_result(&result, chunk_vec)?;
-    Ok(())
-}
-
 fn serialize_proc_data<P: AsRef<Path>>(path: P, data: &ProcessData) -> Result<(), Error> {
     let bytes = bincode::serialize(data)?;
     std::fs::write(path, bytes)?;
@@ -205,19 +199,22 @@ pub(crate) fn translate_markdown<P: AsRef<Path>>(
 ) -> Result<Vec<u8>, Error> {
     let orig_text = String::from_utf8_lossy(orig_markdown);
     let chunk_size = transbot.trans_config.text_chunk_size;
+    let syntax_tag = transbot.trans_config.syntax_tag.as_str();
     let mut proc_data = if let Some(path) = &state_file_path {
         match std::fs::read(path) {
             Ok(bytes) => {
                 let decoded: ProcessData = bincode::deserialize(&bytes)?;
                 decoded
             }
-            Err(e) if e.kind() == ErrorKind::NotFound => markdown_pass1(&orig_text, chunk_size)?,
+            Err(e) if e.kind() == ErrorKind::NotFound => {
+                markdown_pass1(&orig_text, chunk_size, syntax_tag)?
+            }
             Err(e) => {
                 return Err(e.into());
             }
         }
     } else {
-        markdown_pass1(&orig_text, chunk_size)?
+        markdown_pass1(&orig_text, chunk_size, syntax_tag)?
     };
 
     if state_file_path.is_some() && transbot.is_interrupted() {
@@ -228,10 +225,11 @@ pub(crate) fn translate_markdown<P: AsRef<Path>>(
         let start_index = proc_data.chunk_trans_index;
         for index in start_index..proc_data.chunk_group_vec.len() {
             let chunk_group = std::mem::take(&mut proc_data.chunk_group_vec[index]);
-            match translate_text(
+            match html1::translate_text(
                 &transbot.llm_interactor,
                 &chunk_group,
                 &mut proc_data.chunk_vec,
+                syntax_tag,
             ) {
                 Ok(_) => {
                     proc_data.chunk_trans_index = index + 1;

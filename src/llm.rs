@@ -128,10 +128,12 @@ impl LlmConnector {
             LlmApiStyle::ANTHROPIC => self.anthropic_interact(input)?,
         };
 
-        let out_str = resp_text
-            //.trim()
-            .trim_start_matches("```html\n")
-            .trim_end_matches("\n```");
+        let mut out_str = resp_text.trim();
+        if out_str.starts_with("```html\n") {
+            out_str = out_str
+                .trim_start_matches("```html\n")
+                .trim_end_matches("\n```");
+        }
 
         let out = if self.clean_spacing {
             remove_boundary_spaces(out_str).to_string()

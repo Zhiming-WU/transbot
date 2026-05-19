@@ -1,6 +1,6 @@
 [package]
 name = "transbot"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2024"
 description = "A simple translation robot that translates HTMLs/EPUBs/MarkDowns/TEXTs based on LLMs."
 readme = "README.md"

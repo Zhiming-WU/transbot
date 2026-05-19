@@ -38,6 +38,7 @@ fn translate_toc(transbot: &TransBot, epub: &mut Epub) -> Result<(), Error> {
     let mut toc_text_vec = Vec::<String>::new();
     let mut chunk_vec = Vec::new();
     let thres = transbot.trans_config.text_chunk_size;
+    let syntax_tag = transbot.trans_config.syntax_tag.as_str();
 
     // pass1
     traverse_toc_mut(epub, |entry| {
@@ -47,10 +48,10 @@ fn translate_toc(transbot: &TransBot, epub: &mut Epub) -> Result<(), Error> {
             chunk_vec.push(view.label().to_string());
             toc_text.push_str(&format!(
                 "<{} id=\"{}\">{}</{}>\n",
-                SYNTAX_TAG,
+                syntax_tag,
                 index,
                 view.label(),
-                SYNTAX_TAG,
+                syntax_tag,
             ));
             if toc_text.len() > thres {
                 let text = std::mem::take(&mut toc_text);
@@ -70,7 +71,7 @@ fn translate_toc(transbot: &TransBot, epub: &mut Epub) -> Result<(), Error> {
     for text in toc_text_vec {
         check_interrupted(transbot)?;
         let result = transbot.get_llm_interactor().interact(&text)?;
-        html1::handle_tagged_result(&result, &mut chunk_vec)?;
+        html1::handle_tagged_result(&result, &mut chunk_vec, syntax_tag)?;
     }
 
     // pass2

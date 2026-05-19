@@ -1,5 +1,5 @@
 use anyhow::Error;
-use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use pulldown_cmark_to_cmark::cmark_with_options;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
@@ -12,6 +12,7 @@ use crate::*;
 struct ProcessData {
     to_accept_text: bool,
     in_pass2: bool,
+    is_needed_code_block: bool,
     depth: u32,
     parse_index: usize,
     trans_index: usize,
@@ -82,13 +83,7 @@ impl<'a> std::borrow::Borrow<Event<'a>> for EventWrapper<'a> {
                                 if index < proc_data.text_vec.len() {
                                     let t = std::mem::take(&mut proc_data.text_vec[index]);
                                     // println!("ReplaceText: {}", &t);
-                                    if text.starts_with('\n') {
-                                        proc_data.pass2_out.push('\n');
-                                    }
                                     proc_data.pass2_out.push_str(&t);
-                                    if text.ends_with('\n') {
-                                        proc_data.pass2_out.push('\n');
-                                    }
                                 }
                                 proc_data.parse_index += 1;
                             }
@@ -108,6 +103,15 @@ impl<'a> std::borrow::Borrow<Event<'a>> for EventWrapper<'a> {
                             }
                             proc_data.depth += 1;
                         }
+                        Tag::CodeBlock(CodeBlockKind::Fenced(kind)) => {
+                            if kind.starts_with("admonish") {
+                                proc_data.depth += 1;
+                                proc_data.to_accept_text = true;
+                                proc_data.is_needed_code_block = true;
+                            } else {
+                                proc_data.is_needed_code_block = false;
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -122,6 +126,14 @@ impl<'a> std::borrow::Borrow<Event<'a>> for EventWrapper<'a> {
                 ) => {
                     if proc_data.depth > 0 {
                         proc_data.depth -= 1;
+                    }
+                }
+                Event::End(TagEnd::CodeBlock) => {
+                    if proc_data.is_needed_code_block {
+                        if proc_data.depth > 0 {
+                            proc_data.depth -= 1;
+                        }
+                        proc_data.is_needed_code_block = false;
                     }
                 }
                 _ => {}
@@ -234,7 +246,8 @@ pub(crate) fn translate_markdown<P: AsRef<Path>>(
         for index in start_index..proc_data.text_vec.len() {
             let text = &proc_data.text_vec[index];
             match transbot.llm_interactor.interact(text) {
-                Ok(translated) => {
+                Ok(mut translated) => {
+                    restore_triming_newlines(&mut translated, text.as_str());
                     proc_data.text_vec[index] = translated;
                     proc_data.trans_index = index + 1;
                 }

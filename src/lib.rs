@@ -444,6 +444,7 @@ pub(crate) struct TransConfigInner {
     whole_doc_to_llm: bool,
     trans_code_in_md: bool,
     text_chunk_size: usize,
+    syntax_tag: String,
 }
 
 fn verify_url(url_str: &str) -> Result<String, Error> {
@@ -459,10 +460,10 @@ fn get_prompt(dest_lang: &str, prompt_hint: &Option<PromptHint>, single_prompt: 
             return prompt.to_owned();
         }
         if let Some(t) = hint.topic.as_ref() {
-            topic = format!(" related to '{}'", t);
+            topic = format!("The topic of the text is '{}'.\n", t);
         }
         if let Some(e) = hint.extra_prompt.as_ref() {
-            extra_prompt = format!(" {}\n", e);
+            extra_prompt = format!("{}\n", e);
         }
     }
     let translate_request = if single_prompt {
@@ -471,11 +472,13 @@ fn get_prompt(dest_lang: &str, prompt_hint: &Option<PromptHint>, single_prompt: 
         format!("Please translate the provided text into {}.", dest_lang)
     };
     format!(
-        "You are a professional translator. \
-            Your task is to translate the provided text{} into {}. \
-            Strictly maintain the original format, including HTML/XML tags and entities. \
-            Return the translated text only.{} {}",
-        topic, dest_lang, extra_prompt, &translate_request,
+        "You are a professional translator. Your task is to translate the provided text into {}.\n\
+            {}\
+            Strictly maintain the original format, the HTML tags, their attributes and the HTML entities.\n\
+            Produce only the translation text, without any additional explanations or commentary.\n\
+            {}\
+            {}",
+        dest_lang, topic, extra_prompt, &translate_request,
     )
 }
 
@@ -553,6 +556,7 @@ impl TransBot {
             ))?;
         }
 
+        let syntax_tag = std::env::var("TRANSBOT_SYNTAX_TAG").unwrap_or(String::from(SYNTAX_TAG));
         let trans_config_inner = TransConfigInner {
             dest_lang: trans_config
                 .dest_lang
@@ -572,6 +576,7 @@ impl TransBot {
             whole_doc_to_llm: trans_config.whole_doc_to_llm.unwrap_or(false),
             trans_code_in_md: trans_config.trans_code_in_md.unwrap_or(false),
             text_chunk_size: trans_config.text_chunk_size.unwrap_or(400),
+            syntax_tag,
         };
 
         let llm_interactor = LlmConnector::new(
@@ -802,10 +807,12 @@ impl TransBot {
 pub(crate) fn remove_boundary_spaces<'a>(text: &'a str) -> Cow<'a, str> {
     static RE_ASCII_NON: OnceLock<Regex> = OnceLock::new();
     static RE_NON_ASCII: OnceLock<Regex> = OnceLock::new();
+    // Exclude '#','-','*', since in MarkDown, space in "# XX", "- XX", "* XX" makes sense (to form
+    // heading or list item).
     let re_ascii_non =
-        RE_ASCII_NON.get_or_init(|| Regex::new(r"(\p{ASCII})\s+(\P{ASCII})").unwrap());
+        RE_ASCII_NON.get_or_init(|| Regex::new("([^\\P{ASCII}#\\-*]) +(\\P{ASCII})").unwrap());
     let re_non_ascii =
-        RE_NON_ASCII.get_or_init(|| Regex::new(r"(\P{ASCII})\s+(\p{ASCII})").unwrap());
+        RE_NON_ASCII.get_or_init(|| Regex::new(r"(\P{ASCII}) +(\p{ASCII})").unwrap());
 
     let step1 = re_ascii_non.replace_all(text, "$1$2");
     match step1 {
@@ -820,4 +827,35 @@ pub(crate) fn remove_boundary_spaces<'a>(text: &'a str) -> Cow<'a, str> {
     }
 }
 
-pub(crate) const SYNTAX_TAG: &str = "span";
+pub(crate) const SYNTAX_TAG: &str = "a";
+
+fn count_leading_newline(text: &str) -> usize {
+    let mut result = 0usize;
+    let bytes = text.as_bytes();
+    while result < bytes.len() && bytes[result] == b'\n' {
+        result += 1;
+    }
+    result
+}
+
+fn count_tailing_newline(text: &str) -> usize {
+    let bytes = text.as_bytes();
+    let mut idx = bytes.len();
+    while idx > 0 && bytes[idx - 1] == b'\n' {
+        idx -= 1;
+    }
+    bytes.len() - idx
+}
+
+pub(crate) fn restore_triming_newlines(dest: &mut String, orig: &str) {
+    let mut leading = String::new();
+    for _ in 0..count_leading_newline(orig) {
+        leading.push('\n');
+    }
+    if !leading.is_empty() {
+        dest.insert_str(0, leading.as_str());
+    }
+    for _ in 0..count_tailing_newline(orig) {
+        dest.push('\n');
+    }
+}
