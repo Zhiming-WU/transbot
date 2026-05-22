@@ -334,10 +334,10 @@ pub struct TransConfig {
     /// text to be translated is put in the user prompt.
     pub single_prompt: Option<bool>,
     /// The selector selecting which elements in the HTML file to translate, by providing
-    /// the tag names and maybe their attributes. The default is 'p,h1,h2,h3,li'. Tag names are
-    /// separated by commas. As an example, 'p,h1,h2,h3,li,code[class=\"c\"]' also selects 'code'
-    /// elements having 'class' attribute set to 'c', which means comments in code blocks (however
-    /// how code comments is defined is not common but specific to the HTML/EPUB file.
+    /// the tag names and maybe their attributes. The default is 'p,li,dd,h1,h2,h3,h4,h5,h6,title'.
+    /// Tag names are separated by commas. As an example, 'p,li,dd,h1,h2,h3,h4,h5,h6,title,code[class^=\"c\"]'
+    /// also selects 'code' elements having 'class' attribute starting with 'c', which may mean comments
+    /// in code blocks (however how code comments is defined is not common but specific to the HTML/EPUB file.
     /// Specify '*' to select all elements. <br/>For more complicated use, see the document at
     /// <https://docs.rs/lol_html/latest/lol_html/struct.Selector.html#supported-selector>.
     /// <br/>And NOTICE that 'whole' means to pass the whole HTML to LLM to translate.
@@ -348,12 +348,13 @@ pub struct TransConfig {
     pub syntax_strategy: Option<SyntaxStrategy>,
     /// The prompt hint. The default is 'None' and the crate provide the default prompt, which
     /// is built from template something like below.
-    /// <br/>"You are a professional translator specializing in translating text into {dest_lang}.
-    /// Your goal is to accurately convey the meaning and nuances of the original text
-    /// while adhering to {dest_lang} grammar, vocabulary, and cultural sensitivities.
-    /// Produce only the {dest_lang} translation, without any additional explanations or commentary.
-    /// Strictly maintain the original HTML tags and HTML entities.[ {extra_prompt}\n]
-    /// Please translate the provided [{prompt_topic} related ]text into {dest_lang}."
+    ///
+    /// You are a professional translator. Your task is to translate the provided text into {dest_lang}.
+    /// <br/>[The topic of the text is '{extra_prompt}'.]
+    /// <br/>Strictly maintain the original format, the HTML tags, their attributes and the HTML entities.
+    /// <br/>Produce only the translation text, without any additional explanations or commentary.
+    /// <br/>[{extra_prompt}]
+    /// <br/>Please translate the provided text into {dest_lang}.
     pub prompt_hint: Option<PromptHint>,
     /// Whether to print to the stdout the text passed to LLM and the result text gotten from it.
     /// It's mainly for checking during trying this crate on some LLM. The default is false.
@@ -566,7 +567,7 @@ impl TransBot {
             html_elem_selector: trans_config
                 .html_elem_selector
                 .to_owned()
-                .unwrap_or("p,h1,h2,h3,li".into()),
+                .unwrap_or("p,li,dd,h1,h2,h3,h4,h5,h6,title".into()),
             syntax_strategy: trans_config
                 .syntax_strategy
                 .to_owned()

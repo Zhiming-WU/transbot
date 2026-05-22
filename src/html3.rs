@@ -1,4 +1,5 @@
 use anyhow::Error;
+use html_escape::decode_html_entities;
 use lol_html::{HtmlRewriter, Settings, element, end_tag, text};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
@@ -48,13 +49,12 @@ fn html_pass2(
                         if proc_data.depth == 0 {
                             let index = proc_data.parse_index;
                             proc_data.parse_index += 1;
-                            let mut translated = if index < proc_data.chunk_vec.len() {
+                            let translated = if index < proc_data.chunk_vec.len() {
                                 std::mem::take(&mut proc_data.chunk_vec[index])
                             } else {
                                 String::new()
                             };
-                            translated.push_str(&format!("</{}>", end.name()));
-                            end.replace(&translated, lol_html::html_content::ContentType::Html);
+                            end.before(&translated, lol_html::html_content::ContentType::Text);
                         }
                     }
                     Ok(())
@@ -101,7 +101,8 @@ fn html_pass1(elem_selector: &str, orig_html: &[u8]) -> Result<Rc<RefCell<Proces
                         proc_data.depth -= 1;
                         if proc_data.depth == 0 {
                             let chunk_buf = std::mem::take(&mut proc_data.chunk_buf);
-                            proc_data.chunk_vec.push(chunk_buf);
+                            let decoded = decode_html_entities(chunk_buf.as_str()).to_string();
+                            proc_data.chunk_vec.push(decoded);
                         }
                     }
                     Ok(())

@@ -95,10 +95,10 @@ pub struct Cli {
         short = 'H',
         long,
         help = "The selector selecting which elements in the HTML file to translate, by providing\n\
-            the tag names and maybe their attributes. The default is 'p,h1,h2,h3,li'. Tag names are\n\
-            separated by commas. As an example, 'p,h1,h2,h3,li,code[class=\"c1\"]' also selects `code`\n\
-            elements having 'class' attribute set to 'c1', which means comments in code blocks (but how\n\
-            code comments is defined is not common but specific to the HTML/EPUB file).\n\
+            the tag names and maybe their attributes. The default is 'p,li,dd,h1,h2,h3,h4,h5,h6,title'.\n\
+            Tag names are separated by commas. As an example, 'p,li,dd,h1,h2,h3,h4,h5,h6,title,code[class^=\"c\"]'\n\
+            also selects `code` elements having 'class' attribute starting with 'c', which may mean comments\n\
+            in code blocks (however how code comments is defined is not common but specific to the HTML/EPUB file).\n\
             Specify '*' to select all elements. For more complicated use, see the document at\n\
             https://docs.rs/lol_html/latest/lol_html/struct.Selector.html#supported-selector .\n\
             And NOTICE that 'whole' means to pass the whole HTML to LLM to translate"

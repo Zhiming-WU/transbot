@@ -21,7 +21,7 @@ And the syntax strategy (and also text chunk size in 'bytransbot' case) needs to
 resuming to work.
 
 ```text
-Usage: transbot_cli [OPTIONS] --input-file <INPUT_FILE> --provider <PROVIDER> --model-name <MODEL_NAME>
+Usage: transbot [OPTIONS] --input-file <INPUT_FILE> --provider <PROVIDER> --model-name <MODEL_NAME>
 
 Options:
   -i, --input-file <INPUT_FILE>
@@ -59,10 +59,10 @@ Options:
           The default is false [possible values: true, false]
   -H, --html-elem-selector <HTML_ELEM_SELECTOR>
           The selector selecting which elements in the HTML file to translate, by providing
-          the tag names and maybe their attributes. The default is 'p,h1,h2,h3,li'. Tag names are
-          separated by commas. As an example, 'p,h1,h2,h3,li,code[class="c1"]' also selects `code`
-          elements having 'class' attribute set to 'c1', which means comments in code blocks (but how
-          code comments is defined is not common but specific to the HTML/EPUB file).
+          the tag names and maybe their attributes. The default is 'p,li,dd,h1,h2,h3,h4,h5,h6,title'.
+          Tag names are separated by commas. As an example, 'p,li,dd,h1,h2,h3,h4,h5,h6,title,code[class^="c"]'
+          also selects `code` elements having 'class' attribute starting with 'c', which may mean comments
+          in code blocks (however how code comments is defined is not common but specific to the HTML/EPUB file).
           Specify '*' to select all elements. For more complicated use, see the document at
           https://docs.rs/lol_html/latest/lol_html/struct.Selector.html#supported-selector .
           And NOTICE that 'whole' means to pass the whole HTML to LLM to translate
